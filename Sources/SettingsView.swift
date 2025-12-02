@@ -171,7 +171,7 @@ struct AccountDetailView: View {
                                 .padding()
                         } else {
                             ForEach($account.folders) { $folder in
-                                FolderRowView(folder: $folder, onDelete: {
+                                FolderDetailRow(folder: $folder, onDelete: {
                                     account.folders.removeAll { $0.id == folder.id }
                                 })
                             }
@@ -261,10 +261,71 @@ struct AccountDetailView: View {
     }
 }
 
+struct FolderDetailRow: View {
+    @Binding var folder: FolderConfig
+    let onDelete: () -> Void
+
+    var body: some View {
+        VStack(spacing: 8) {
+            FolderRowView(folder: $folder, onDelete: onDelete)
+
+            // Filter fields - show when enabled
+            if folder.enabled {
+                HStack(spacing: 12) {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                        .foregroundColor(.secondary)
+                        .frame(width: 20)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text("From:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 50, alignment: .trailing)
+                            TextField("Filter by sender (e.g., 'rick')", text: $folder.filterSender)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.caption)
+                        }
+
+                        HStack {
+                            Text("Subject:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 50, alignment: .trailing)
+                            TextField("Filter by subject (e.g., 'JXL')", text: $folder.filterSubject)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.caption)
+                        }
+                    }
+                }
+                .padding(.leading, 40)
+                .padding(.bottom, 4)
+            }
+
+            Divider()
+        }
+    }
+}
+
 struct FolderRowView: View {
     @Binding var folder: FolderConfig
     let onDelete: () -> Void
     @State private var showingIconPicker = false
+    @State private var showingColorPicker = false
+
+    private var iconColor: Color {
+        if folder.iconColor.isEmpty {
+            return .accentColor
+        }
+        return Color(nsColor: NSColor(hex: folder.iconColor) ?? .labelColor)
+    }
+
+    private var colorPreview: Color {
+        if folder.iconColor.isEmpty {
+            return .gray
+        }
+        return Color(nsColor: NSColor(hex: folder.iconColor) ?? .gray)
+    }
 
     var body: some View {
         HStack {
@@ -274,11 +335,23 @@ struct FolderRowView: View {
                     Button(action: { showingIconPicker = true }) {
                         Image(systemName: folder.icon)
                             .frame(width: 20, height: 20)
-                            .foregroundColor(.accentColor)
+                            .foregroundColor(iconColor)
                     }
                     .buttonStyle(.plain)
                     .popover(isPresented: $showingIconPicker) {
                         IconPickerView(selectedIcon: $folder.icon)
+                    }
+
+                    // Color picker button
+                    Button(action: { showingColorPicker = true }) {
+                        Circle()
+                            .fill(colorPreview)
+                            .frame(width: 16, height: 16)
+                            .overlay(Circle().stroke(Color.secondary.opacity(0.3), lineWidth: 1))
+                    }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $showingColorPicker) {
+                        ColorPickerView(selectedColor: $folder.iconColor)
                     }
 
                     VStack(alignment: .leading, spacing: 2) {
@@ -303,44 +376,240 @@ struct FolderRowView: View {
     }
 }
 
-struct IconPickerView: View {
-    @Binding var selectedIcon: String
+struct ColorPickerView: View {
+    @Binding var selectedColor: String
     @Environment(\.dismiss) var dismiss
 
-    let commonIcons = [
-        "envelope", "tray", "paperplane", "doc.text",
-        "folder", "archivebox", "star", "flag",
-        "bell", "tag", "bookmark", "gear",
-        "person", "briefcase", "cart", "creditcard",
-        "book", "newspaper", "graduationcap", "building",
-        "house", "phone", "message", "video"
+    let presetColors = [
+        ("Default", ""),
+        ("Red", "#FF3B30"),
+        ("Orange", "#FF9500"),
+        ("Yellow", "#FFCC00"),
+        ("Green", "#34C759"),
+        ("Teal", "#5AC8FA"),
+        ("Blue", "#007AFF"),
+        ("Indigo", "#5856D6"),
+        ("Purple", "#AF52DE"),
+        ("Pink", "#FF2D55"),
+        ("Gray", "#8E8E93"),
+        ("Black", "#000000")
     ]
 
     var body: some View {
-        VStack(spacing: 12) {
-            Text("Choose Icon")
+        VStack(spacing: 16) {
+            Text("Choose Color")
                 .font(.headline)
 
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 50))], spacing: 12) {
-                ForEach(commonIcons, id: \.self) { icon in
+            // Preset colors grid
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 60))], spacing: 12) {
+                ForEach(presetColors, id: \.0) { (name, hex) in
                     Button(action: {
-                        selectedIcon = icon
+                        selectedColor = hex
                         dismiss()
                     }) {
                         VStack(spacing: 4) {
-                            Image(systemName: icon)
-                                .font(.title2)
+                            Circle()
+                                .fill(hex.isEmpty ? Color.gray : Color(nsColor: NSColor(hex: hex) ?? .gray))
                                 .frame(width: 40, height: 40)
-                                .background(selectedIcon == icon ? Color.accentColor.opacity(0.2) : Color.clear)
-                                .cornerRadius(8)
+                                .overlay(Circle().stroke(selectedColor == hex ? Color.accentColor : Color.clear, lineWidth: 3))
+                            Text(name)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
                     }
                     .buttonStyle(.plain)
                 }
             }
 
+            Divider()
+
+            // Custom hex input
             HStack {
-                TextField("Custom SF Symbol", text: $selectedIcon)
+                Text("Custom:")
+                    .foregroundColor(.secondary)
+                TextField("#FF0000", text: $selectedColor)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 100)
+
+                if !selectedColor.isEmpty {
+                    Circle()
+                        .fill(Color(nsColor: NSColor(hex: selectedColor) ?? .gray))
+                        .frame(width: 24, height: 24)
+                }
+
+                Button("Done") {
+                    dismiss()
+                }
+            }
+        }
+        .padding()
+        .frame(width: 350, height: 350)
+    }
+}
+
+struct IconPickerView: View {
+    @Binding var selectedIcon: String
+    @Environment(\.dismiss) var dismiss
+    @State private var searchText = ""
+
+    // Comprehensive list of SF Symbols (500+ icons)
+    let allIconsList: [String] = {
+        var icons: [String] = []
+
+        // Base symbols
+        let baseSymbols = [
+            "envelope", "tray", "paperplane", "mail", "doc", "folder",
+            "archivebox", "star", "flag", "bell", "tag", "bookmark",
+            "gear", "person", "briefcase", "cart", "creditcard", "bag",
+            "phone", "message", "bubble", "video", "mic", "speaker",
+            "terminal", "hammer", "wrench", "cpu", "lock", "key",
+            "photo", "camera", "film", "play", "pause", "music.note",
+            "book", "newspaper", "graduationcap", "building", "house",
+            "heart", "bolt", "flame", "sparkle", "leaf", "globe",
+            "sun.max", "moon", "cloud", "snowflake", "drop", "wind",
+            "clock", "timer", "stopwatch", "calendar", "alarm",
+            "location", "map", "pin", "mappin", "arrow.up", "arrow.down",
+            "arrow.left", "arrow.right", "chevron.up", "chevron.down",
+            "plus", "minus", "xmark", "checkmark", "circle", "square",
+            "rectangle", "triangle", "diamond", "hexagon", "shield",
+            "trash", "pencil", "eraser", "scissors", "magnifyingglass",
+            "slider.horizontal.3", "paintbrush", "eyedropper", "rotate.left",
+            "rotate.right", "chart.bar", "chart.pie", "chart.line.uptrend.xyaxis",
+            "gauge", "speedometer", "battery.100", "antenna.radiowaves.left.and.right",
+            "wifi", "network", "server.rack", "printer", "scanner",
+            "keyboard", "mouse", "display", "desktopcomputer", "laptopcomputer",
+            "ipad", "iphone", "applewatch", "airpods", "headphones",
+            "airplayvideo", "tv", "hifispeaker", "homepod", "cable.connector",
+            "flashlight.on.fill", "flashlight.off.fill", "lightbulb", "lamp.desk",
+            "fan", "air.conditioner.horizontal", "heater.vertical", "thermometer",
+            "humidity", "tropicalstorm", "tornado", "rainbow", "sunset",
+            "hare", "tortoise", "ant", "ladybug", "bird", "fish",
+            "pawprint", "dog", "cat", "sportscourt", "basketball", "football",
+            "baseball", "tennis.racket", "hockey.puck", "figure.walk", "figure.run",
+            "bicycle", "car", "bus", "tram", "train.side.front.car",
+            "airplane", "ferry", "fuelpump", "parkingsign", "steeringwheel",
+            "wrench.and.screwdriver", "bandage", "cross.case", "pills",
+            "syringe", "medical.thermometer", "stethoscope", "bed.double",
+            "fork.knife", "cup.and.saucer", "wineglass", "birthday.cake",
+            "gift", "balloon", "party.popper", "popcorn", "carrot",
+            "leaf.arrow.triangle.circlepath", "bin.xmark", "recycle"
+        ]
+
+        // Add base symbols
+        icons.append(contentsOf: baseSymbols)
+
+        // Add .fill variants for applicable symbols
+        let fillableSymbols = [
+            "envelope", "tray", "paperplane", "doc", "folder",
+            "archivebox", "star", "flag", "bell", "tag", "bookmark",
+            "gear", "person", "briefcase", "cart", "creditcard", "bag",
+            "phone", "message", "bubble", "video", "heart", "bolt",
+            "flame", "leaf", "sun.max", "moon", "cloud", "circle",
+            "square", "triangle", "shield", "trash", "pencil", "checkmark",
+            "photo", "camera", "play", "pause", "house", "building",
+            "location", "mappin", "clock", "calendar", "lock", "key"
+        ]
+
+        for symbol in fillableSymbols {
+            icons.append("\(symbol).fill")
+        }
+
+        // Add .circle variants
+        let circleSymbols = [
+            "envelope", "star", "flag", "bell", "gear", "person",
+            "plus", "minus", "xmark", "checkmark", "arrow.up", "arrow.down",
+            "play", "pause", "location", "questionmark", "exclamationmark"
+        ]
+
+        for symbol in circleSymbols {
+            icons.append("\(symbol).circle")
+            icons.append("\(symbol).circle.fill")
+        }
+
+        // Add .badge variants
+        let badgeSymbols = [
+            "envelope", "folder", "tray", "person", "star", "flag"
+        ]
+
+        for symbol in badgeSymbols {
+            icons.append("\(symbol).badge.plus")
+        }
+
+        return Array(Set(icons)).sorted()
+    }()
+
+    var filteredIcons: [String] {
+        if searchText.isEmpty {
+            return allIconsList
+        }
+        return allIconsList.filter { $0.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack {
+                Text("Choose Icon")
+                    .font(.headline)
+                Spacer()
+                Text("\(filteredIcons.count) icons")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            // Search
+            HStack {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(.secondary)
+                TextField("Search 500+ SF Symbols...", text: $searchText)
+                    .textFieldStyle(.plain)
+                if !searchText.isEmpty {
+                    Button(action: { searchText = "" }) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundColor(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(8)
+            .background(Color(NSColor.textBackgroundColor))
+            .cornerRadius(8)
+
+            // Icon grid
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 55))], spacing: 8) {
+                    ForEach(filteredIcons, id: \.self) { icon in
+                        Button(action: {
+                            selectedIcon = icon
+                            dismiss()
+                        }) {
+                            VStack(spacing: 2) {
+                                Image(systemName: icon)
+                                    .font(.title3)
+                                    .frame(width: 44, height: 44)
+                                    .background(selectedIcon == icon ? Color.accentColor.opacity(0.2) : Color.clear)
+                                    .cornerRadius(8)
+                                Text(icon.replacingOccurrences(of: ".", with: "\n"))
+                                    .font(.system(size: 7))
+                                    .lineLimit(2)
+                                    .multilineTextAlignment(.center)
+                                    .foregroundColor(.secondary)
+                                    .frame(height: 16)
+                            }
+                            .frame(width: 55)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal)
+            }
+
+            Divider()
+
+            // Custom input
+            HStack {
+                Text("Custom:")
+                    .foregroundColor(.secondary)
+                TextField("Or enter any SF Symbol name", text: $selectedIcon)
                     .textFieldStyle(.roundedBorder)
                 Button("Done") {
                     dismiss()
@@ -348,7 +617,7 @@ struct IconPickerView: View {
             }
         }
         .padding()
-        .frame(width: 400, height: 350)
+        .frame(width: 550, height: 550)
     }
 }
 

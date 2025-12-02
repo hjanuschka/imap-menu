@@ -26,6 +26,7 @@ class FolderMenuItem {
     init(account: IMAPAccount, folderConfig: FolderConfig) {
         // Create status bar item
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.isVisible = true
 
         // Create email manager
         emailManager = EmailManager(account: account, folderConfig: folderConfig)
@@ -50,7 +51,9 @@ class FolderMenuItem {
         emailManager.$unreadCount
             .receive(on: DispatchQueue.main)
             .sink { [weak self] count in
-                self?.updateMenuBarIcon(unreadCount: count, folderName: folderConfig.name)
+                guard let self = self else { return }
+                print("📢 [\(folderConfig.name)] unreadCount changed to \(count), icon='\(self.emailManager.folderConfig.icon)'")
+                self.updateMenuBarIcon(unreadCount: count, folderName: folderConfig.name)
             }
             .store(in: &cancellables)
 
@@ -66,29 +69,53 @@ class FolderMenuItem {
         // Get custom icon from folder config
         let iconName = emailManager.folderConfig.icon
         let filledIconName = iconName.contains(".fill") ? iconName : "\(iconName).fill"
+        let iconColor = emailManager.folderConfig.nsColor
 
+        // Debug: log icon changes
+        if button.toolTip != folderName || (button.image == nil && unreadCount == 0) {
+            print("📊 [\(folderName)] updateMenuBarIcon: icon='\(iconName)', unread=\(unreadCount), iconExists=\(NSImage(systemSymbolName: iconName, accessibilityDescription: nil) != nil)")
+        }
+
+        // Determine which icon to use
+        let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+        let baseIconName = unreadCount > 0 ? filledIconName : iconName
+        let iconImage = NSImage(systemSymbolName: baseIconName, accessibilityDescription: folderName)
+            ?? NSImage(systemSymbolName: iconName, accessibilityDescription: folderName)
+            ?? NSImage(systemSymbolName: "envelope", accessibilityDescription: folderName)
+
+        // Apply color to icon
+        let coloredIcon = iconImage?.withSymbolConfiguration(config)
+        let finalImage: NSImage?
+        if !emailManager.folderConfig.iconColor.isEmpty {
+            finalImage = coloredIcon?.image(tintedWith: iconColor)
+        } else {
+            finalImage = coloredIcon
+        }
+
+        // Create icon attachment
+        let iconAttachment = NSTextAttachment()
+        iconAttachment.image = finalImage
+
+        let iconString = NSMutableAttributedString(attachment: iconAttachment)
+
+        // Add badge number (always reserve space for consistent alignment)
         if unreadCount > 0 {
-            // Create attributed string with badge
-            let iconAttachment = NSTextAttachment()
-            iconAttachment.image = NSImage(systemSymbolName: filledIconName, accessibilityDescription: folderName)
-                ?? NSImage(systemSymbolName: "envelope.fill", accessibilityDescription: folderName)
-
-            let iconString = NSMutableAttributedString(attachment: iconAttachment)
-
             let badgeText = unreadCount > 99 ? "99+" : "\(unreadCount)"
             let badgeString = NSAttributedString(string: " \(badgeText)", attributes: [
                 .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
                 .foregroundColor: NSColor.systemRed
             ])
-
             iconString.append(badgeString)
-            button.attributedTitle = iconString
-            button.image = nil
         } else {
-            button.attributedTitle = NSAttributedString(string: "")
-            button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: folderName)
-                ?? NSImage(systemSymbolName: "envelope", accessibilityDescription: folderName)
+            // Reserve space but make it invisible for consistent alignment
+            let spacer = NSAttributedString(string: "  ", attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+            ])
+            iconString.append(spacer)
         }
+
+        button.attributedTitle = iconString
+        button.image = nil
 
         // Update tooltip
         button.toolTip = folderName
@@ -152,6 +179,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let setupFolder = FolderConfig(name: "⚙️ Settings", folderPath: "")
             let setupItem = FolderMenuItem(account: setupAccount, folderConfig: setupFolder)
             folderMenuItems.append(setupItem)
+        }
+    }
+}
+extension NSImage {
+    func image(tintedWith color: NSColor) -> NSImage {
+        guard let cgImage = self.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return self
+        }
+
+        return NSImage(size: size, flipped: false) { bounds in
+            color.setFill()
+            bounds.fill()
+
+            let imageRect = NSRect(origin: .zero, size: self.size)
+            self.draw(in: imageRect, from: imageRect, operation: .destinationIn, fraction: 1.0)
+
+            return true
         }
     }
 }

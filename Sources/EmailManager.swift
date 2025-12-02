@@ -496,9 +496,15 @@ class EmailManager: ObservableObject {
 
                 connection.disconnect()
 
+                // Apply filters
+                let filteredEmails = fetchedEmails.filter { self.folderConfig.matchesFilters(email: $0) }
+                if filteredEmails.count < fetchedEmails.count {
+                    print("[EmailManager] [\(self.folderConfig.name)] Filtered to \(filteredEmails.count) emails (from \(fetchedEmails.count))")
+                }
+
                 DispatchQueue.main.async {
-                    self.emails = fetchedEmails.sorted { $0.date > $1.date }
-                    self.unreadCount = fetchedEmails.filter { !$0.isRead }.count
+                    self.emails = filteredEmails.sorted { $0.date > $1.date }
+                    self.unreadCount = filteredEmails.filter { !$0.isRead }.count
                     self.isConnected = true
                     self.isLoading = false
                     self.secondsUntilRefresh = self.refreshInterval

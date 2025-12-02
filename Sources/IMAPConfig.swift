@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import AppKit
 
 struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
     let id: UUID
@@ -7,13 +8,47 @@ struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
     var folderPath: String // IMAP folder path
     var enabled: Bool
     var icon: String // SF Symbol name
+    var iconColor: String // Hex color for icon (e.g., "#FF0000")
+    var filterSender: String // Filter emails by sender (contains, case-insensitive)
+    var filterSubject: String // Filter emails by subject (contains, case-insensitive)
 
-    init(id: UUID = UUID(), name: String, folderPath: String, enabled: Bool = true, icon: String = "envelope") {
+    init(id: UUID = UUID(), name: String, folderPath: String, enabled: Bool = true, icon: String = "envelope", iconColor: String = "", filterSender: String = "", filterSubject: String = "") {
         self.id = id
         self.name = name
         self.folderPath = folderPath
         self.enabled = enabled
         self.icon = icon
+        self.iconColor = iconColor
+        self.filterSender = filterSender
+        self.filterSubject = filterSubject
+    }
+
+    var nsColor: NSColor {
+        if iconColor.isEmpty {
+            return .labelColor
+        }
+        return NSColor(hex: iconColor) ?? .labelColor
+    }
+
+    func matchesFilters(email: Email) -> Bool {
+        // If no filters set, show all emails
+        if filterSender.isEmpty && filterSubject.isEmpty {
+            return true
+        }
+
+        var matches = true
+
+        // Check sender filter
+        if !filterSender.isEmpty {
+            matches = matches && email.from.localizedCaseInsensitiveContains(filterSender)
+        }
+
+        // Check subject filter
+        if !filterSubject.isEmpty {
+            matches = matches && email.subject.localizedCaseInsensitiveContains(filterSubject)
+        }
+
+        return matches
     }
 }
 
@@ -61,6 +96,12 @@ struct AppConfig: Codable {
         for i in 0..<config.accounts.count {
             let account = config.accounts[i]
             config.accounts[i].password = KeychainHelper.getPassword(for: account.username, host: account.host) ?? ""
+
+            // Debug: log folder icons
+            print("🔍 [AppConfig.load] Account '\(account.name)' folders:")
+            for folder in account.folders {
+                print("    - '\(folder.name)': icon='\(folder.icon)', color='\(folder.iconColor)'")
+            }
         }
 
         return config
@@ -145,5 +186,44 @@ class KeychainHelper {
         ]
 
         SecItemDelete(query as CFDictionary)
+    }
+}
+
+extension NSColor {
+    convenience init?(hex: String) {
+        var hexSanitized = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        hexSanitized = hexSanitized.replacingOccurrences(of: "#", with: "")
+
+        var rgb: UInt64 = 0
+        guard Scanner(string: hexSanitized).scanHexInt64(&rgb) else { return nil }
+
+        let length = hexSanitized.count
+        let r, g, b, a: CGFloat
+
+        if length == 6 {
+            r = CGFloat((rgb & 0xFF0000) >> 16) / 255.0
+            g = CGFloat((rgb & 0x00FF00) >> 8) / 255.0
+            b = CGFloat(rgb & 0x0000FF) / 255.0
+            a = 1.0
+        } else if length == 8 {
+            r = CGFloat((rgb & 0xFF000000) >> 24) / 255.0
+            g = CGFloat((rgb & 0x00FF0000) >> 16) / 255.0
+            b = CGFloat((rgb & 0x0000FF00) >> 8) / 255.0
+            a = CGFloat(rgb & 0x000000FF) / 255.0
+        } else {
+            return nil
+        }
+
+        self.init(red: r, green: g, blue: b, alpha: a)
+    }
+
+    var hexString: String {
+        guard let components = cgColor.components, components.count >= 3 else {
+            return "#000000"
+        }
+        let r = Int(components[0] * 255.0)
+        let g = Int(components[1] * 255.0)
+        let b = Int(components[2] * 255.0)
+        return String(format: "#%02X%02X%02X", r, g, b)
     }
 }
