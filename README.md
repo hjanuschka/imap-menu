@@ -6,8 +6,6 @@ A lightweight macOS menubar app for monitoring IMAP email folders with instant n
 
 ![Expanded Email View](screenshots/02_expanded_menubarapp.png)
 
-![Settings](screenshots/03_settings.png)
-
 ## Features
 
 - 🔔 **Real-time notifications** - Unread count badges in menubar
