@@ -264,18 +264,32 @@ struct AccountDetailView: View {
 struct FolderRowView: View {
     @Binding var folder: FolderConfig
     let onDelete: () -> Void
+    @State private var showingIconPicker = false
 
     var body: some View {
         HStack {
             Toggle(isOn: $folder.enabled) {
-                VStack(alignment: .leading, spacing: 2) {
-                    TextField("Display Name", text: $folder.name)
-                        .textFieldStyle(.plain)
-                        .font(.body)
-                    TextField("Folder Path", text: $folder.folderPath)
-                        .textFieldStyle(.plain)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                HStack(spacing: 8) {
+                    // Icon picker button
+                    Button(action: { showingIconPicker = true }) {
+                        Image(systemName: folder.icon)
+                            .frame(width: 20, height: 20)
+                            .foregroundColor(.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .popover(isPresented: $showingIconPicker) {
+                        IconPickerView(selectedIcon: $folder.icon)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        TextField("Display Name", text: $folder.name)
+                            .textFieldStyle(.plain)
+                            .font(.body)
+                        TextField("Folder Path", text: $folder.folderPath)
+                            .textFieldStyle(.plain)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
 
@@ -286,6 +300,55 @@ struct FolderRowView: View {
             .buttonStyle(.plain)
         }
         .padding(.vertical, 4)
+    }
+}
+
+struct IconPickerView: View {
+    @Binding var selectedIcon: String
+    @Environment(\.dismiss) var dismiss
+
+    let commonIcons = [
+        "envelope", "tray", "paperplane", "doc.text",
+        "folder", "archivebox", "star", "flag",
+        "bell", "tag", "bookmark", "gear",
+        "person", "briefcase", "cart", "creditcard",
+        "book", "newspaper", "graduationcap", "building",
+        "house", "phone", "message", "video"
+    ]
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Text("Choose Icon")
+                .font(.headline)
+
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: 50))], spacing: 12) {
+                ForEach(commonIcons, id: \.self) { icon in
+                    Button(action: {
+                        selectedIcon = icon
+                        dismiss()
+                    }) {
+                        VStack(spacing: 4) {
+                            Image(systemName: icon)
+                                .font(.title2)
+                                .frame(width: 40, height: 40)
+                                .background(selectedIcon == icon ? Color.accentColor.opacity(0.2) : Color.clear)
+                                .cornerRadius(8)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            HStack {
+                TextField("Custom SF Symbol", text: $selectedIcon)
+                    .textFieldStyle(.roundedBorder)
+                Button("Done") {
+                    dismiss()
+                }
+            }
+        }
+        .padding()
+        .frame(width: 400, height: 350)
     }
 }
 

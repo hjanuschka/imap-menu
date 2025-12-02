@@ -6,12 +6,14 @@ struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
     var name: String // Display name for the menubar
     var folderPath: String // IMAP folder path
     var enabled: Bool
+    var icon: String // SF Symbol name
 
-    init(id: UUID = UUID(), name: String, folderPath: String, enabled: Bool = true) {
+    init(id: UUID = UUID(), name: String, folderPath: String, enabled: Bool = true, icon: String = "envelope") {
         self.id = id
         self.name = name
         self.folderPath = folderPath
         self.enabled = enabled
+        self.icon = icon
     }
 }
 

@@ -491,7 +491,7 @@ class EmailManager: ObservableObject {
                 try connection.connect()
                 print("[EmailManager] [\(self.folderConfig.name)] Connected! \(Date().timeIntervalSince(startTime))s")
 
-                let fetchedEmails = try connection.fetchEmails(folder: self.folderConfig.folderPath, limit: 50)
+                let fetchedEmails = try connection.fetchEmails(folder: self.folderConfig.folderPath, limit: 25)
                 print("[EmailManager] [\(self.folderConfig.name)] Fetched \(fetchedEmails.count) emails in \(Date().timeIntervalSince(startTime))s")
 
                 connection.disconnect()

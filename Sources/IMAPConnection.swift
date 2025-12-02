@@ -107,7 +107,7 @@ class IMAPConnection {
         }
     }
 
-    func fetchEmails(folder: String, limit: Int, daysBack: Int = 20) throws -> [Email] {
+    func fetchEmails(folder: String, limit: Int, daysBack: Int = 7) throws -> [Email] {
         let fetchStart = Date()
         let encodedFolder = encodeModifiedUTF7(folder)
         print("[IMAP] SELECT folder: \(encodedFolder)")

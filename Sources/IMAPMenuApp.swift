@@ -63,10 +63,15 @@ class FolderMenuItem {
     func updateMenuBarIcon(unreadCount: Int, folderName: String) {
         guard let button = statusItem.button else { return }
 
+        // Get custom icon from folder config
+        let iconName = emailManager.folderConfig.icon
+        let filledIconName = iconName.contains(".fill") ? iconName : "\(iconName).fill"
+
         if unreadCount > 0 {
             // Create attributed string with badge
             let iconAttachment = NSTextAttachment()
-            iconAttachment.image = NSImage(systemSymbolName: "envelope.fill", accessibilityDescription: folderName)
+            iconAttachment.image = NSImage(systemSymbolName: filledIconName, accessibilityDescription: folderName)
+                ?? NSImage(systemSymbolName: "envelope.fill", accessibilityDescription: folderName)
 
             let iconString = NSMutableAttributedString(attachment: iconAttachment)
 
@@ -81,7 +86,8 @@ class FolderMenuItem {
             button.image = nil
         } else {
             button.attributedTitle = NSAttributedString(string: "")
-            button.image = NSImage(systemSymbolName: "envelope", accessibilityDescription: folderName)
+            button.image = NSImage(systemSymbolName: iconName, accessibilityDescription: folderName)
+                ?? NSImage(systemSymbolName: "envelope", accessibilityDescription: folderName)
         }
 
         // Update tooltip
