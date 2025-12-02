@@ -75,6 +75,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.white)
             } else {
+                // Show email list with inline detail
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(emailManager.emails) { email in
@@ -91,6 +92,7 @@ struct ContentView: View {
 
                             if selectedEmail?.id == email.id {
                                 EmailDetailView(email: email, emailManager: emailManager, selectedEmail: $selectedEmail)
+                                    .frame(height: 300)
                                     .transition(.opacity.combined(with: .move(edge: .top)))
                             }
 
@@ -124,7 +126,7 @@ struct ContentView: View {
             .padding(.vertical, 6)
             .background(Color(NSColor.windowBackgroundColor))
         }
-        .frame(width: 420, height: 550)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.white)
         .sheet(isPresented: $showingSettings) {
             SettingsView()
@@ -136,6 +138,7 @@ struct EmailRowView: View {
     @ObservedObject var emailManager: EmailManager
     let emailId: String
     let isSelected: Bool
+    @State private var isHovering = false
 
     private var email: Email? {
         emailManager.emails.first(where: { $0.id == emailId })
@@ -174,16 +177,58 @@ struct EmailRowView: View {
                     }
                 }
 
-                Image(systemName: "chevron.right")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .rotationEffect(.degrees(isSelected ? 90 : 0))
-                    .animation(.easeInOut(duration: 0.2), value: isSelected)
+                Spacer()
+
+                // Action buttons (always visible)
+                HStack(spacing: 4) {
+                    Button(action: {
+                        if email.isRead {
+                            emailManager.markAsUnread(email)
+                        } else {
+                            emailManager.markAsRead(email)
+                        }
+                    }) {
+                        Image(systemName: email.isRead ? "envelope.badge" : "envelope.open")
+                            .font(.system(size: 11))
+                            .foregroundColor(email.isRead ? .orange : .blue)
+                    }
+                    .buttonStyle(.plain)
+                    .help(email.isRead ? "Mark as Unread" : "Mark as Read")
+
+                    Button(action: {
+                        emailManager.deleteEmail(email)
+                    }) {
+                        Image(systemName: "trash")
+                            .font(.system(size: 11))
+                            .foregroundColor(.red)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Delete")
+                }
+                .padding(.top, 4)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(isSelected ? Color.accentColor.opacity(0.1) : Color.white)
+            .background(isSelected ? Color.accentColor.opacity(0.1) : Color.clear)
             .contentShape(Rectangle())
+            .contextMenu {
+                Button(action: {
+                    if email.isRead {
+                        emailManager.markAsUnread(email)
+                    } else {
+                        emailManager.markAsRead(email)
+                    }
+                }) {
+                    Label(email.isRead ? "Mark as Unread" : "Mark as Read",
+                          systemImage: email.isRead ? "envelope.badge" : "envelope.open")
+                }
+
+                Button(role: .destructive, action: {
+                    emailManager.deleteEmail(email)
+                }) {
+                    Label("Delete", systemImage: "trash")
+                }
+            }
         }
     }
 
@@ -271,7 +316,6 @@ struct EmailDetailView: View {
                 .frame(height: 200)
             } else {
                 WebViewRepresentable(html: fullBodyHTML)
-                    .frame(height: 200)
             }
         }
         .background(Color.white)

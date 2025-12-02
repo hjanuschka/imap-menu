@@ -6,6 +6,7 @@ xcuserdata/
 DerivedData/
 .swiftpm/
 *.app
+*.zip
 *.icns
 AppIcon.iconset/
 generate_icons.swift

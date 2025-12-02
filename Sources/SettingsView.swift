@@ -296,6 +296,20 @@ struct FolderDetailRow: View {
                                 .textFieldStyle(.roundedBorder)
                                 .font(.caption)
                         }
+
+                        HStack {
+                            Text("Width:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .frame(width: 50, alignment: .trailing)
+                            Picker("", selection: $folder.popoverWidth) {
+                                Text("Small").tag(FolderConfig.PopoverWidth.small)
+                                Text("Medium").tag(FolderConfig.PopoverWidth.medium)
+                                Text("Large").tag(FolderConfig.PopoverWidth.large)
+                            }
+                            .pickerStyle(.segmented)
+                            .frame(width: 200)
+                        }
                     }
                 }
                 .padding(.leading, 40)

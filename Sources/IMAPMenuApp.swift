@@ -33,11 +33,15 @@ class FolderMenuItem {
 
         // Create popover
         popover = NSPopover()
-        popover.contentSize = NSSize(width: 420, height: 550)
+        popover.contentSize = folderConfig.popoverWidth.size
         popover.behavior = .transient
         popover.animates = true
 
+        print("    🪟 Popover created with size: \(folderConfig.popoverWidth.size)")
+
         let contentView = ContentView(emailManager: emailManager)
+            .frame(width: folderConfig.popoverWidth.size.width,
+                   height: folderConfig.popoverWidth.size.height)
         popover.contentViewController = NSHostingController(rootView: contentView)
 
         // Set up button
@@ -155,6 +159,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func reloadConfigAndCreateMenuItems() {
+        print("🔄 reloadConfigAndCreateMenuItems called")
+
         // Remove existing items
         for item in folderMenuItems {
             item.emailManager.stopFetching()
@@ -168,6 +174,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Create menu items for each account's folders
         for account in config.accounts {
             for folderConfig in account.folders where folderConfig.enabled {
+                print("  📐 Creating menuItem for '\(folderConfig.name)' with width: \(folderConfig.popoverWidth.rawValue) (\(folderConfig.popoverWidth.size))")
                 let menuItem = FolderMenuItem(account: account, folderConfig: folderConfig)
                 folderMenuItems.append(menuItem)
             }
@@ -180,6 +187,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let setupItem = FolderMenuItem(account: setupAccount, folderConfig: setupFolder)
             folderMenuItems.append(setupItem)
         }
+
+        print("✅ Created \(folderMenuItems.count) menu items")
     }
 }
 extension NSImage {

@@ -3,6 +3,20 @@ import Security
 import AppKit
 
 struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
+    enum PopoverWidth: String, Codable {
+        case small = "small"
+        case medium = "medium"
+        case large = "large"
+
+        var size: NSSize {
+            switch self {
+            case .small: return NSSize(width: 350, height: 500)
+            case .medium: return NSSize(width: 450, height: 550)
+            case .large: return NSSize(width: 600, height: 650)
+            }
+        }
+    }
+
     let id: UUID
     var name: String // Display name for the menubar
     var folderPath: String // IMAP folder path
@@ -11,8 +25,9 @@ struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
     var iconColor: String // Hex color for icon (e.g., "#FF0000")
     var filterSender: String // Filter emails by sender (contains, case-insensitive)
     var filterSubject: String // Filter emails by subject (contains, case-insensitive)
+    var popoverWidth: PopoverWidth // Popover size
 
-    init(id: UUID = UUID(), name: String, folderPath: String, enabled: Bool = true, icon: String = "envelope", iconColor: String = "", filterSender: String = "", filterSubject: String = "") {
+    init(id: UUID = UUID(), name: String, folderPath: String, enabled: Bool = true, icon: String = "envelope", iconColor: String = "", filterSender: String = "", filterSubject: String = "", popoverWidth: PopoverWidth = .medium) {
         self.id = id
         self.name = name
         self.folderPath = folderPath
@@ -21,6 +36,21 @@ struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
         self.iconColor = iconColor
         self.filterSender = filterSender
         self.filterSubject = filterSubject
+        self.popoverWidth = popoverWidth
+    }
+
+    // Custom decoding to handle missing popoverWidth in old configs
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        folderPath = try container.decode(String.self, forKey: .folderPath)
+        enabled = try container.decode(Bool.self, forKey: .enabled)
+        icon = try container.decode(String.self, forKey: .icon)
+        iconColor = try container.decodeIfPresent(String.self, forKey: .iconColor) ?? ""
+        filterSender = try container.decodeIfPresent(String.self, forKey: .filterSender) ?? ""
+        filterSubject = try container.decodeIfPresent(String.self, forKey: .filterSubject) ?? ""
+        popoverWidth = try container.decodeIfPresent(PopoverWidth.self, forKey: .popoverWidth) ?? .medium
     }
 
     var nsColor: NSColor {
@@ -87,24 +117,35 @@ struct AppConfig: Codable {
     var accounts: [IMAPAccount]
 
     static func load() -> AppConfig {
-        guard let data = UserDefaults.standard.data(forKey: "AppConfig"),
-              var config = try? JSONDecoder().decode(AppConfig.self, from: data) else {
+        guard let data = UserDefaults.standard.data(forKey: "AppConfig") else {
+            print("⚠️ No AppConfig found in UserDefaults")
             return AppConfig(accounts: [])
         }
 
-        // Load passwords from Keychain for each account
-        for i in 0..<config.accounts.count {
-            let account = config.accounts[i]
-            config.accounts[i].password = KeychainHelper.getPassword(for: account.username, host: account.host) ?? ""
+        // Try to decode, with detailed error logging
+        do {
+            var config = try JSONDecoder().decode(AppConfig.self, from: data)
 
-            // Debug: log folder icons
-            print("🔍 [AppConfig.load] Account '\(account.name)' folders:")
-            for folder in account.folders {
-                print("    - '\(folder.name)': icon='\(folder.icon)', color='\(folder.iconColor)'")
+            // Load passwords from Keychain for each account
+            for i in 0..<config.accounts.count {
+                let account = config.accounts[i]
+                config.accounts[i].password = KeychainHelper.getPassword(for: account.username, host: account.host) ?? ""
+
+                // Debug: log folder icons
+                print("🔍 [AppConfig.load] Account '\(account.name)' folders:")
+                for folder in account.folders {
+                    print("    - '\(folder.name)': icon='\(folder.icon)', color='\(folder.iconColor)', width=\(folder.popoverWidth.rawValue)")
+                }
             }
-        }
 
-        return config
+            return config
+        } catch {
+            print("❌ Failed to decode AppConfig: \(error)")
+            if let jsonString = String(data: data, encoding: .utf8) {
+                print("📄 Raw JSON: \(jsonString)")
+            }
+            return AppConfig(accounts: [])
+        }
     }
 
     func save() {

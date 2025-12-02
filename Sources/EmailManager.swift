@@ -598,6 +598,11 @@ class EmailManager: ObservableObject {
     func deleteEmail(_ email: Email) {
         guard !account.host.isEmpty else { return }
 
+        // Optimistically remove from UI immediately
+        emails.removeAll { $0.id == email.id }
+        unreadCount = emails.filter { !$0.isRead }.count
+
+        // Perform actual IMAP delete in background
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
@@ -613,13 +618,12 @@ class EmailManager: ObservableObject {
                 try connection.connect()
                 try connection.deleteEmail(folder: self.folderConfig.folderPath, uid: email.uid)
                 connection.disconnect()
-
-                DispatchQueue.main.async {
-                    self.emails.removeAll { $0.id == email.id }
-                    self.unreadCount = self.emails.filter { !$0.isRead }.count
-                }
             } catch {
                 DispatchQueue.main.async {
+                    // On error, add it back and show error
+                    self.emails.append(email)
+                    self.emails.sort { $0.date > $1.date }
+                    self.unreadCount = self.emails.filter { !$0.isRead }.count
                     self.errorMessage = "Failed to delete: \(error.localizedDescription)"
                 }
             }

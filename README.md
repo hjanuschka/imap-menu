@@ -1,29 +1,35 @@
 # IMAP Menu
 
-A lightweight macOS menubar app for monitoring IMAP email folders.
+A lightweight macOS menubar app for monitoring IMAP email folders with instant notifications and quick actions.
 
 ## Features
 
-- **Multiple Accounts**: Configure multiple IMAP accounts (Gmail, AWS WorkMail, etc.)
-- **Multiple Folders**: Monitor multiple folders per account
-- **One Icon Per Folder**: Each monitored folder gets its own menubar icon with unread count
-- **Fast Loading**: Uses IMAP SEARCH to only fetch emails from the last 20 days
-- **Auto-Refresh**: Automatically checks for new emails every 60 seconds
-- **Mark as Read/Unread**: Click to mark emails as read or unread
-- **Delete Emails**: Delete emails directly from the menubar
-- **HTML Email Support**: View HTML emails with proper rendering
+- 🔔 **Real-time notifications** - Unread count badges in menubar
+- 📬 **Multiple accounts & folders** - Monitor multiple IMAP accounts and folders simultaneously
+- 🎨 **Customizable icons** - Choose from 500+ SF Symbols with custom colors
+- ⚡ **Instant actions** - Mark read/unread, delete emails with optimistic UI updates
+- 🔍 **Email filtering** - Filter by sender and/or subject
+- 📐 **Adjustable size** - Small, medium, or large popover sizes
+- 🔐 **Secure** - Passwords stored in macOS Keychain
+- 🚀 **Fast** - Optimized IMAP queries, ~2 second load times
+- 🔄 **Auto-refresh** - Configurable 60-second refresh interval
+- 📧 **HTML emails** - Full HTML rendering with WKWebView
 
-## Setup
+## Quick Start
 
-1. Open the app - it will show a setup icon in the menubar
-2. Click the menubar icon and go to Settings (or press `Cmd+,`)
-3. Add an IMAP account:
-   - Click the `+` button to add a new account
-   - Enter your IMAP server details (host, port, username, password)
-   - Click "Test Connection" to verify
-   - Click "Browse Folders..." to see available folders
-   - Select folders to monitor (each gets its own menubar icon)
-4. Click "Save & Reload"
+1. **Launch** the app - a ⚙️ icon appears in menubar
+2. **Click** the icon → Settings
+3. **Add Account**:
+   - Name, host, port, username, password
+   - Test connection
+   - Browse folders
+4. **Configure Folders**:
+   - Display name
+   - Choose icon (500+ available)
+   - Pick color
+   - Set filters (optional)
+   - Select popover width
+5. **Save & Refresh** - folder icons appear in menubar!
 
 ## Example Configuration
 
@@ -43,26 +49,120 @@ A lightweight macOS menubar app for monitoring IMAP email folders.
 
 ## Usage
 
-- **View Emails**: Click any folder's menubar icon to see emails
-- **Read Email**: Click an email to expand and view the full message
-- **Mark as Read**: Email is automatically marked as read after being expanded for 5 seconds
-- **Mark as Unread**: Click the "Mark as Unread" button
-- **Delete**: Click the delete button and confirm
+- **View Emails**: Click any folder's menubar icon to see emails in a popover
+- **Read Email**: Click an email to expand inline and view the full HTML message
+- **Auto-mark as Read**: Email is automatically marked as read after being expanded for 5 seconds
+- **Quick Actions**: Use the action buttons on each email to:
+  - Toggle read/unread status (instant feedback)
+  - Delete email (instant feedback)
 - **Refresh**: Emails refresh automatically every 60 seconds, or click the refresh button
+- **Context Menu**: Right-click any email for additional options
+
+## Advanced Features
+
+### Filtering
+Each folder can have filters applied:
+- **Sender Filter**: Only show emails from specific senders (comma-separated)
+- **Subject Filter**: Only show emails with specific subject keywords
+
+### Custom Icons & Colors
+- Choose from 500+ SF Symbols (e.g., `envelope`, `network`, `bag`, `flag`)
+- Customize icon color with 12 presets or enter custom hex codes
+- Icons automatically show filled variant when unread emails exist
+
+### Performance
+- Optimized IMAP queries fetch only headers initially
+- Full email body loads on-demand when expanded
+- Typical load time: ~2 seconds for 50 emails
+- Background auto-refresh every 60 seconds
+- Optimistic UI updates for instant feedback
+
+### Security
+- Passwords stored securely in macOS Keychain
+- SSL/TLS encryption for all IMAP connections
+- No credentials stored in plain text
 
 ## Build from Source
 
+### Requirements
+- macOS 12.0 or later
+- Xcode 14.0 or later
+- Swift 5.7 or later
+
+### Building
 ```bash
+# Debug build
+swift build
+
+# Release build
 swift build -c release
-./build.sh
-open IMAPMenu.app
+
+# Run from build directory
+.build/release/IMAPMenu
 ```
 
-## Install
-
+### Creating App Bundle
 ```bash
+# Build and package as .app
+./build.sh
+
+# Open the app
+open IMAPMenu.app
+
+# Install to Applications
 cp -r IMAPMenu.app /Applications/
 ```
+
+## Building Universal Binary
+
+For distribution, create a universal binary that runs on both Intel and Apple Silicon:
+
+```bash
+./release.sh
+```
+
+This creates `IMAPMenu-universal.zip` with a fat binary supporting both architectures.
+
+## Troubleshooting
+
+### App doesn't appear in menubar
+- Check Console.app for error messages
+- Verify IMAP settings are correct
+- Test connection in Settings
+
+### Gmail "Authentication failed"
+- Enable IMAP in Gmail settings
+- Generate an App Password (don't use your regular password)
+- Use the App Password in IMAP Menu
+
+### AWS WorkMail connection issues
+- Ensure you're using the correct regional endpoint
+- Format: `imap.mail.{region}.awsapps.com`
+- Verify port 993 and SSL are enabled
+
+### Icons not updating
+- Click the refresh button manually
+- Check connection status (green/red dot in footer)
+- Restart the app
+
+### High CPU usage
+- Increase auto-refresh interval in code (default 60s)
+- Reduce number of monitored folders
+- Check for IMAP server issues
+
+## Configuration Backup
+
+Settings are stored in macOS UserDefaults:
+
+```bash
+# Export config
+defaults read com.imapmenu.app AppConfig > config.json
+
+# Import config
+defaults write com.imapmenu.app AppConfig "$(cat config.json)"
+```
+
+**Note**: This doesn't include passwords (stored in Keychain).
 
 ## License
 
