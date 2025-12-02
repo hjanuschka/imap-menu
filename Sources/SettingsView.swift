@@ -282,7 +282,7 @@ struct FolderDetailRow: View {
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .frame(width: 50, alignment: .trailing)
-                            TextField("Filter by sender (e.g., 'rick')", text: $folder.filterSender)
+                            TextField("Filter by sender (e.g., 'max musterman')", text: $folder.filterSender)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.caption)
                         }
@@ -292,7 +292,7 @@ struct FolderDetailRow: View {
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                                 .frame(width: 50, alignment: .trailing)
-                            TextField("Filter by subject (e.g., 'JXL')", text: $folder.filterSubject)
+                            TextField("Filter by subject (e.g., 'Subject pattern')", text: $folder.filterSubject)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.caption)
                         }
