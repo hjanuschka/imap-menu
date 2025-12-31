@@ -118,12 +118,14 @@ struct AccountDetailView: View {
     @Binding var testMessage: String
     @Binding var showFolderBrowser: Bool
     @Binding var availableFolders: [String]
+    @State private var testingSmtp = false
+    @State private var smtpTestMessage = ""
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 // Account settings
-                GroupBox(label: Text("Account Settings")) {
+                GroupBox(label: Text("IMAP Settings (Receiving)")) {
                     VStack(alignment: .leading, spacing: 12) {
                         TextField("Account Name", text: $account.name)
 
@@ -156,6 +158,74 @@ struct AccountDetailView: View {
                                 Text(testMessage)
                                     .font(.caption)
                                     .foregroundColor(testMessage.contains("Success") || testMessage.contains("✓") ? .green : .red)
+                            }
+                        }
+                    }
+                    .padding()
+                }
+
+                // SMTP settings
+                GroupBox(label: Text("SMTP Settings (Sending)")) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            TextField("SMTP Host", text: $account.smtpHost)
+                            Text("(e.g., smtp.gmail.com)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        HStack {
+                            TextField("Port", value: $account.smtpPort, format: .number)
+                                .frame(width: 80)
+                            Toggle("Use SSL/TLS", isOn: $account.smtpUseSSL)
+
+                            Text("(587 for STARTTLS, 465 for SSL)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        HStack {
+                            TextField("SMTP Username (if different)", text: $account.smtpUsername)
+                            if account.smtpUsername.isEmpty {
+                                Text("Uses IMAP username")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("Email Signature:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            TextEditor(text: $account.signature)
+                                .font(.body)
+                                .frame(height: 60)
+                                .border(Color.secondary.opacity(0.2))
+                        }
+
+                        HStack {
+                            Button("Test SMTP") {
+                                testSmtpConnection()
+                            }
+                            .disabled(testingSmtp || account.smtpHost.isEmpty)
+
+                            if testingSmtp {
+                                ProgressView()
+                                    .scaleEffect(0.7)
+                            }
+
+                            if !smtpTestMessage.isEmpty {
+                                Text(smtpTestMessage)
+                                    .font(.caption)
+                                    .foregroundColor(smtpTestMessage.contains("✓") ? .green : .red)
+                            }
+
+                            Spacer()
+
+                            if account.smtpHost.isEmpty {
+                                Text("Configure SMTP to enable Reply feature")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
                             }
                         }
                     }
@@ -259,6 +329,38 @@ struct AccountDetailView: View {
             } catch {
                 DispatchQueue.main.async {
                     testMessage = "✗ Failed to load folders: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func testSmtpConnection() {
+        testingSmtp = true
+        smtpTestMessage = ""
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let config = SMTPConfig(
+                    host: account.smtpHost,
+                    port: account.smtpPort,
+                    username: account.effectiveSmtpUsername,
+                    password: account.password,
+                    useSSL: account.smtpUseSSL,
+                    fromEmail: account.emailAddress,
+                    fromName: account.name
+                )
+                let connection = SMTPConnection(config: config)
+                try connection.connect()
+                connection.disconnect()
+
+                DispatchQueue.main.async {
+                    testingSmtp = false
+                    smtpTestMessage = "✓ SMTP connection successful"
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    testingSmtp = false
+                    smtpTestMessage = "✗ \(error.localizedDescription)"
                 }
             }
         }

@@ -256,16 +256,47 @@ struct EmailDetailView: View {
     @State private var isLoading: Bool = true
     @State private var showDeleteConfirm: Bool = false
     @State private var markAsReadTimer: Timer?
+    @State private var composeWindowController: ComposeWindowController?
 
     // Get the current email state from the manager
     private var currentEmail: Email {
         emailManager.emails.first(where: { $0.id == email.id }) ?? email
     }
 
+    private var canReply: Bool {
+        emailManager.account.hasSmtpConfigured
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // Action buttons
             HStack(spacing: 12) {
+                // Reply buttons
+                Button(action: {
+                    openReply(mode: .reply(currentEmail))
+                }) {
+                    Label("Reply", systemImage: "arrowshape.turn.up.left")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!canReply)
+                .help(canReply ? "Reply to sender" : "Configure SMTP in Settings to reply")
+
+                Button(action: {
+                    openReply(mode: .replyAll(currentEmail))
+                }) {
+                    Label("Reply All", systemImage: "arrowshape.turn.up.left.2")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(!canReply)
+                .help(canReply ? "Reply to all recipients" : "Configure SMTP in Settings to reply")
+
+                Divider()
+                    .frame(height: 20)
+
                 Button(action: {
                     // Cancel any pending mark-as-read timer
                     markAsReadTimer?.invalidate()
@@ -360,6 +391,46 @@ struct EmailDetailView: View {
             }
             self.isLoading = false
         }
+    }
+
+    private func openReply(mode: ComposeMode) {
+        // Store the email body in the email for quoting
+        var emailWithBody = currentEmail
+        if !fullBodyHTML.isEmpty {
+            // Create an email with the loaded body for proper quoting
+            emailWithBody = Email(
+                id: currentEmail.id,
+                uid: currentEmail.uid,
+                subject: currentEmail.subject,
+                from: currentEmail.from,
+                fromEmail: currentEmail.fromEmail,
+                fromName: currentEmail.fromName,
+                to: currentEmail.to,
+                date: currentEmail.date,
+                preview: currentEmail.preview,
+                body: fullBodyHTML,
+                contentType: "text/html",
+                boundary: "",
+                isRead: currentEmail.isRead
+            )
+        }
+
+        let controller = ComposeWindowController()
+        let replyMode: ComposeMode
+        switch mode {
+        case .reply:
+            replyMode = .reply(emailWithBody)
+        case .replyAll:
+            replyMode = .replyAll(emailWithBody)
+        case .new:
+            replyMode = .new
+        }
+
+        controller.showCompose(account: emailManager.account, mode: replyMode) {
+            // Email sent successfully - could show notification here
+            print("[Compose] Email sent successfully")
+        }
+        composeWindowController = controller
     }
 }
 

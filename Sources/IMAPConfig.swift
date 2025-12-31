@@ -459,7 +459,14 @@ struct IMAPAccount: Codable, Identifiable, Equatable, Hashable {
     var useSSL: Bool
     var folders: [FolderConfig]
 
-    init(id: UUID = UUID(), name: String, host: String, port: Int = 993, username: String, password: String = "", useSSL: Bool = true, folders: [FolderConfig] = []) {
+    // SMTP settings for sending emails
+    var smtpHost: String
+    var smtpPort: Int
+    var smtpUseSSL: Bool
+    var smtpUsername: String  // If empty, uses IMAP username
+    var signature: String     // Text signature appended to outgoing emails
+
+    init(id: UUID = UUID(), name: String, host: String, port: Int = 993, username: String, password: String = "", useSSL: Bool = true, folders: [FolderConfig] = [], smtpHost: String = "", smtpPort: Int = 587, smtpUseSSL: Bool = true, smtpUsername: String = "", signature: String = "") {
         self.id = id
         self.name = name
         self.host = host
@@ -468,13 +475,47 @@ struct IMAPAccount: Codable, Identifiable, Equatable, Hashable {
         self.password = password
         self.useSSL = useSSL
         self.folders = folders
+        self.smtpHost = smtpHost
+        self.smtpPort = smtpPort
+        self.smtpUseSSL = smtpUseSSL
+        self.smtpUsername = smtpUsername
+        self.signature = signature
     }
-    
+
+    // Custom decoder for backward compatibility
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        host = try container.decode(String.self, forKey: .host)
+        port = try container.decode(Int.self, forKey: .port)
+        username = try container.decode(String.self, forKey: .username)
+        password = try container.decodeIfPresent(String.self, forKey: .password) ?? ""
+        useSSL = try container.decode(Bool.self, forKey: .useSSL)
+        folders = try container.decode([FolderConfig].self, forKey: .folders)
+
+        // SMTP fields with defaults for backward compatibility
+        smtpHost = try container.decodeIfPresent(String.self, forKey: .smtpHost) ?? ""
+        smtpPort = try container.decodeIfPresent(Int.self, forKey: .smtpPort) ?? 587
+        smtpUseSSL = try container.decodeIfPresent(Bool.self, forKey: .smtpUseSSL) ?? true
+        smtpUsername = try container.decodeIfPresent(String.self, forKey: .smtpUsername) ?? ""
+        signature = try container.decodeIfPresent(String.self, forKey: .signature) ?? ""
+    }
+
     var emailAddress: String {
         if username.contains("@") {
             return username
         }
         return username
+    }
+
+    var effectiveSmtpUsername: String {
+        smtpUsername.isEmpty ? username : smtpUsername
+    }
+
+    var hasSmtpConfigured: Bool {
+        !smtpHost.isEmpty
     }
 }
 
