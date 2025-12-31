@@ -60,7 +60,7 @@ struct SettingsView: View {
                     .foregroundColor(.secondary)
             }
         }
-        .frame(minWidth: 800, minHeight: 600)
+        .frame(minWidth: 950, minHeight: 750)
         .padding()
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
@@ -135,7 +135,7 @@ struct AccountDetailView: View {
                             Toggle("Use SSL", isOn: $account.useSSL)
                         }
 
-                        TextField("Username", text: $account.username)
+                        TextField("Username / Email", text: $account.username)
                             .textContentType(.username)
 
                         SecureField("Password", text: $account.password)
@@ -155,7 +155,7 @@ struct AccountDetailView: View {
                             if !testMessage.isEmpty {
                                 Text(testMessage)
                                     .font(.caption)
-                                    .foregroundColor(testMessage.contains("Success") ? .green : .red)
+                                    .foregroundColor(testMessage.contains("Success") || testMessage.contains("✓") ? .green : .red)
                             }
                         }
                     }
@@ -171,9 +171,13 @@ struct AccountDetailView: View {
                                 .padding()
                         } else {
                             ForEach($account.folders) { $folder in
-                                FolderDetailRow(folder: $folder, onDelete: {
-                                    account.folders.removeAll { $0.id == folder.id }
-                                })
+                                FolderDetailRow(
+                                    folder: $folder,
+                                    accountEmail: account.emailAddress,
+                                    onDelete: {
+                                        account.folders.removeAll { $0.id == folder.id }
+                                    }
+                                )
                             }
                         }
 
@@ -263,54 +267,100 @@ struct AccountDetailView: View {
 
 struct FolderDetailRow: View {
     @Binding var folder: FolderConfig
+    let accountEmail: String
     let onDelete: () -> Void
+    @State private var showFilters = false
 
     var body: some View {
         VStack(spacing: 8) {
             FolderRowView(folder: $folder, onDelete: onDelete)
 
-            // Filter fields - show when enabled
             if folder.enabled {
-                HStack(spacing: 12) {
-                    Image(systemName: "line.3.horizontal.decrease.circle")
-                        .foregroundColor(.secondary)
-                        .frame(width: 20)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            Text("From:")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .frame(width: 50, alignment: .trailing)
-                            TextField("Filter by sender (e.g., 'max musterman')", text: $folder.filterSender)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.caption)
+                // Quick options
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 12) {
+                        Image(systemName: "line.3.horizontal.decrease.circle")
+                            .foregroundColor(.secondary)
+                            .frame(width: 20)
+                        
+                        // Exclude own emails toggle
+                        Toggle("Exclude emails from me (\(accountEmail))", isOn: $folder.excludeOwnEmails)
+                            .font(.caption)
+                        
+                        Spacer()
+                        
+                        // Popover width
+                        Picker("Width:", selection: $folder.popoverWidth) {
+                            Text("S").tag(FolderConfig.PopoverWidth.small)
+                            Text("M").tag(FolderConfig.PopoverWidth.medium)
+                            Text("L").tag(FolderConfig.PopoverWidth.large)
                         }
-
-                        HStack {
-                            Text("Subject:")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .frame(width: 50, alignment: .trailing)
-                            TextField("Filter by subject (e.g., 'Subject pattern')", text: $folder.filterSubject)
-                                .textFieldStyle(.roundedBorder)
-                                .font(.caption)
-                        }
-
-                        HStack {
-                            Text("Width:")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .frame(width: 50, alignment: .trailing)
-                            Picker("", selection: $folder.popoverWidth) {
-                                Text("Small").tag(FolderConfig.PopoverWidth.small)
-                                Text("Medium").tag(FolderConfig.PopoverWidth.medium)
-                                Text("Large").tag(FolderConfig.PopoverWidth.large)
-                            }
-                            .pickerStyle(.segmented)
-                            .frame(width: 200)
-                        }
+                        .pickerStyle(.segmented)
+                        .frame(width: 100)
                     }
+                    
+                    // Fetch settings
+                    HStack(spacing: 12) {
+                        Image(systemName: "arrow.down.circle")
+                            .foregroundColor(.secondary)
+                            .frame(width: 20)
+                        
+                        Text("Fetch:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        HStack(spacing: 4) {
+                            TextField("", value: $folder.maxEmails, format: .number)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 60)
+                            Text("emails")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        Text("(0 = all)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        
+                        Spacer()
+                        
+                        HStack(spacing: 4) {
+                            Text("from last")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            TextField("", value: $folder.daysToFetch, format: .number)
+                                .textFieldStyle(.roundedBorder)
+                                .frame(width: 50)
+                            Text("days")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        
+                        Text("(0 = all time)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    // Filter Groups section
+                    DisclosureGroup(
+                        isExpanded: $showFilters,
+                        content: {
+                            FilterGroupsView(folder: $folder)
+                        },
+                        label: {
+                            HStack {
+                                Text("Filter Groups")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                if !folder.filterGroups.isEmpty {
+                                    Text("(\(folder.filterGroups.count) groups)")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                        }
+                    )
+                    .padding(.leading, 32)
                 }
                 .padding(.leading, 40)
                 .padding(.bottom, 4)
@@ -318,6 +368,261 @@ struct FolderDetailRow: View {
 
             Divider()
         }
+    }
+}
+
+// MARK: - Filter Groups View
+
+struct FilterGroupsView: View {
+    @Binding var folder: FolderConfig
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            // Group logic selector (only if multiple groups)
+            if folder.filterGroups.count > 1 {
+                HStack {
+                    Text("Combine groups with:")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Picker("", selection: $folder.groupLogic) {
+                        Text("AND (all must match)").tag(FolderConfig.FilterLogic.and)
+                        Text("OR (any must match)").tag(FolderConfig.FilterLogic.or)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 280)
+                }
+                .padding(.bottom, 8)
+            }
+            
+            // Groups list
+            ForEach($folder.filterGroups) { $group in
+                FilterGroupRow(group: $group, onDelete: {
+                    folder.filterGroups.removeAll { $0.id == group.id }
+                })
+            }
+            
+            // Add group button
+            Button(action: {
+                folder.filterGroups.append(FilterGroup())
+            }) {
+                Label("Add Filter Group", systemImage: "plus.rectangle.on.rectangle")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .padding(.top, 4)
+            
+            // Help text
+            VStack(alignment: .leading, spacing: 4) {
+                Text("💡 How Filter Groups Work:")
+                    .font(.caption2)
+                    .fontWeight(.medium)
+                Text("• Each group can contain multiple rules combined with AND/OR")
+                Text("• Groups themselves are combined using the selector above")
+                Text("• Exclude rules always reject emails (within their group)")
+                Text("• Example: Group1 (Subject=jxl OR From=foolip) AND Group2 (Exclude Name=Helmut)")
+            }
+            .font(.caption2)
+            .foregroundColor(.secondary)
+            .padding(.top, 8)
+        }
+        .padding(.vertical, 8)
+    }
+}
+
+struct FilterGroupRow: View {
+    @Binding var group: FilterGroup
+    let onDelete: () -> Void
+    @State private var isExpanded = true
+    
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Group header
+            HStack {
+                Toggle("", isOn: $group.enabled)
+                    .toggleStyle(.checkbox)
+                    .labelsHidden()
+                
+                TextField("Group name", text: $group.name)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 120)
+                    .font(.caption)
+                
+                Picker("", selection: $group.logic) {
+                    Text("OR").tag(FilterGroup.GroupLogic.or)
+                    Text("AND").tag(FilterGroup.GroupLogic.and)
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 80)
+                .help("How rules within this group are combined")
+                
+                // Server-side search toggle
+                Toggle("⚡Server", isOn: $group.useServerSearch)
+                    .toggleStyle(.button)
+                    .font(.caption2)
+                    .help("Use IMAP server-side SEARCH (much faster!)")
+                
+                Text("(\(group.filters.count) rules)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                
+                Spacer()
+                
+                Button(action: { isExpanded.toggle() }) {
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption)
+                }
+                .buttonStyle(.plain)
+                
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .foregroundColor(.red)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(8)
+            .background(group.useServerSearch ? Color.blue.opacity(0.1) : Color(NSColor.controlBackgroundColor))
+            .cornerRadius(6)
+            .opacity(group.enabled ? 1.0 : 0.6)
+            
+            // Group filters (expandable)
+            if isExpanded && group.enabled {
+                VStack(alignment: .leading, spacing: 4) {
+                    // Server search custom query option
+                    if group.useServerSearch {
+                        HStack {
+                            Text("Custom IMAP SEARCH:")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            TextField("e.g., OR SUBJECT jxl FROM foolip", text: $group.serverSearchQuery)
+                                .textFieldStyle(.roundedBorder)
+                                .font(.caption)
+                            
+                            if group.serverSearchQuery.isEmpty {
+                                Text("(auto-built from rules)")
+                                    .font(.caption2)
+                                    .foregroundColor(.green)
+                            }
+                        }
+                        .padding(.bottom, 4)
+                        
+                        // Show what query will be used
+                        if let query = group.buildIMAPSearchQuery() {
+                            HStack {
+                                Text("Query:")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                Text(query)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundColor(.blue)
+                            }
+                            .padding(.bottom, 4)
+                        }
+                    }
+                    
+                    ForEach($group.filters) { $filter in
+                        FilterRuleRow(filter: $filter, onDelete: {
+                            group.filters.removeAll { $0.id == filter.id }
+                        })
+                    }
+                    
+                    HStack(spacing: 12) {
+                        Button(action: {
+                            group.filters.append(EmailFilter(filterType: .include))
+                        }) {
+                            Label("Include", systemImage: "plus.circle")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundColor(.green)
+                        
+                        Button(action: {
+                            group.filters.append(EmailFilter(filterType: .exclude))
+                        }) {
+                            Label("Exclude", systemImage: "minus.circle")
+                                .font(.caption2)
+                        }
+                        .buttonStyle(.borderless)
+                        .foregroundColor(.orange)
+                    }
+                    .padding(.leading, 24)
+                    
+                    if group.useServerSearch {
+                        Text("💡 Server search: Only Include rules are sent to server. Exclude rules still filter client-side.")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                            .padding(.top, 4)
+                    }
+                }
+                .padding(.leading, 16)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+struct FilterRuleRow: View {
+    @Binding var filter: EmailFilter
+    let onDelete: () -> Void
+    
+    var body: some View {
+        HStack(spacing: 6) {
+            // Enable/disable
+            Toggle("", isOn: $filter.enabled)
+                .toggleStyle(.checkbox)
+                .labelsHidden()
+            
+            // Filter type indicator
+            Image(systemName: filter.filterType == .include ? "checkmark.circle.fill" : "xmark.circle.fill")
+                .font(.caption)
+                .foregroundColor(filter.filterType == .include ? .green : .orange)
+            
+            // Filter type
+            Picker("", selection: $filter.filterType) {
+                Text("Include").tag(EmailFilter.FilterType.include)
+                Text("Exclude").tag(EmailFilter.FilterType.exclude)
+            }
+            .frame(width: 75)
+            .labelsHidden()
+            
+            // Field
+            Picker("", selection: $filter.field) {
+                ForEach(EmailFilter.MatchField.allCases, id: \.self) { field in
+                    Text(field.rawValue).tag(field)
+                }
+            }
+            .frame(width: 95)
+            .labelsHidden()
+            
+            // Match type
+            Picker("", selection: $filter.matchType) {
+                ForEach(EmailFilter.MatchType.allCases, id: \.self) { type in
+                    Text(type.rawValue).tag(type)
+                }
+            }
+            .frame(width: 95)
+            .labelsHidden()
+            
+            // Pattern
+            TextField("Pattern...", text: $filter.pattern)
+                .textFieldStyle(.roundedBorder)
+                .font(.caption)
+            
+            // Case sensitive toggle
+            Toggle("Aa", isOn: $filter.caseSensitive)
+                .toggleStyle(.button)
+                .font(.caption2)
+                .help("Case Sensitive")
+            
+            // Delete button
+            Button(action: onDelete) {
+                Image(systemName: "trash")
+                    .foregroundColor(.red)
+                    .font(.caption)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.vertical, 2)
+        .opacity(filter.enabled ? 1.0 : 0.5)
     }
 }
 
@@ -414,7 +719,6 @@ struct ColorPickerView: View {
             Text("Choose Color")
                 .font(.headline)
 
-            // Preset colors grid
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 60))], spacing: 12) {
                 ForEach(presetColors, id: \.0) { (name, hex) in
                     Button(action: {
@@ -437,7 +741,6 @@ struct ColorPickerView: View {
 
             Divider()
 
-            // Custom hex input
             HStack {
                 Text("Custom:")
                     .foregroundColor(.secondary)
@@ -466,11 +769,9 @@ struct IconPickerView: View {
     @Environment(\.dismiss) var dismiss
     @State private var searchText = ""
 
-    // Comprehensive list of SF Symbols (500+ icons)
     let allIconsList: [String] = {
         var icons: [String] = []
 
-        // Base symbols
         let baseSymbols = [
             "envelope", "tray", "paperplane", "mail", "doc", "folder",
             "archivebox", "star", "flag", "bell", "tag", "bookmark",
@@ -509,10 +810,8 @@ struct IconPickerView: View {
             "leaf.arrow.triangle.circlepath", "bin.xmark", "recycle"
         ]
 
-        // Add base symbols
         icons.append(contentsOf: baseSymbols)
 
-        // Add .fill variants for applicable symbols
         let fillableSymbols = [
             "envelope", "tray", "paperplane", "doc", "folder",
             "archivebox", "star", "flag", "bell", "tag", "bookmark",
@@ -528,7 +827,6 @@ struct IconPickerView: View {
             icons.append("\(symbol).fill")
         }
 
-        // Add .circle variants
         let circleSymbols = [
             "envelope", "star", "flag", "bell", "gear", "person",
             "plus", "minus", "xmark", "checkmark", "arrow.up", "arrow.down",
@@ -540,7 +838,6 @@ struct IconPickerView: View {
             icons.append("\(symbol).circle.fill")
         }
 
-        // Add .badge variants
         let badgeSymbols = [
             "envelope", "folder", "tray", "person", "star", "flag"
         ]
@@ -570,11 +867,10 @@ struct IconPickerView: View {
                     .foregroundColor(.secondary)
             }
 
-            // Search
             HStack {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.secondary)
-                TextField("Search 500+ SF Symbols...", text: $searchText)
+                TextField("Search SF Symbols...", text: $searchText)
                     .textFieldStyle(.plain)
                 if !searchText.isEmpty {
                     Button(action: { searchText = "" }) {
@@ -588,7 +884,6 @@ struct IconPickerView: View {
             .background(Color(NSColor.textBackgroundColor))
             .cornerRadius(8)
 
-            // Icon grid
             ScrollView {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 55))], spacing: 8) {
                     ForEach(filteredIcons, id: \.self) { icon in
@@ -619,11 +914,10 @@ struct IconPickerView: View {
 
             Divider()
 
-            // Custom input
             HStack {
                 Text("Custom:")
                     .foregroundColor(.secondary)
-                TextField("Or enter any SF Symbol name", text: $selectedIcon)
+                TextField("SF Symbol name", text: $selectedIcon)
                     .textFieldStyle(.roundedBorder)
                 Button("Done") {
                     dismiss()

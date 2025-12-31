@@ -2,6 +2,251 @@ import Foundation
 import Security
 import AppKit
 
+// MARK: - Email Filter System
+
+struct EmailFilter: Codable, Identifiable, Equatable, Hashable {
+    let id: UUID
+    
+    enum FilterType: String, Codable, CaseIterable {
+        case include = "Include"
+        case exclude = "Exclude"
+    }
+    
+    enum MatchField: String, Codable, CaseIterable {
+        case from = "From"
+        case fromName = "From (Name)"
+        case fromEmail = "From (Email)"
+        case to = "To"
+        case subject = "Subject"
+        case any = "Any Field"
+        
+        // Handle legacy field names
+        init(from decoder: Decoder) throws {
+            let container = try decoder.singleValueContainer()
+            let rawValue = try container.decode(String.self)
+            
+            switch rawValue {
+            case "From (Name only)":  // Legacy name
+                self = .fromName
+            case "From (Email only)":  // Legacy name
+                self = .fromEmail
+            default:
+                if let field = MatchField(rawValue: rawValue) {
+                    self = field
+                } else {
+                    self = .from  // Default fallback
+                }
+            }
+        }
+    }
+    
+    enum MatchType: String, Codable, CaseIterable {
+        case contains = "Contains"
+        case notContains = "Not Contains"
+        case equals = "Equals"
+        case startsWith = "Starts With"
+        case endsWith = "Ends With"
+        case regex = "Regex"
+    }
+    
+    var filterType: FilterType
+    var field: MatchField
+    var matchType: MatchType
+    var pattern: String
+    var caseSensitive: Bool
+    var enabled: Bool
+    
+    init(id: UUID = UUID(), filterType: FilterType = .include, field: MatchField = .from, matchType: MatchType = .contains, pattern: String = "", caseSensitive: Bool = false, enabled: Bool = true) {
+        self.id = id
+        self.filterType = filterType
+        self.field = field
+        self.matchType = matchType
+        self.pattern = pattern
+        self.caseSensitive = caseSensitive
+        self.enabled = enabled
+    }
+    
+    func matches(email: Email) -> Bool {
+        guard enabled && !pattern.isEmpty else { return true }
+        
+        let fieldsToCheck: [String]
+        switch field {
+        case .from:
+            fieldsToCheck = [email.from]
+        case .fromName:
+            fieldsToCheck = [email.fromName]
+        case .fromEmail:
+            fieldsToCheck = [email.fromEmail]
+        case .to:
+            fieldsToCheck = [email.to]
+        case .subject:
+            fieldsToCheck = [email.subject]
+        case .any:
+            fieldsToCheck = [email.from, email.fromName, email.fromEmail, email.to, email.subject]
+        }
+        
+        let matchResult = fieldsToCheck.contains { fieldValue in
+            matchesPattern(fieldValue)
+        }
+        
+        return matchResult
+    }
+    
+    private func matchesPattern(_ value: String) -> Bool {
+        let compareValue = caseSensitive ? value : value.lowercased()
+        let comparePattern = caseSensitive ? pattern : pattern.lowercased()
+        
+        switch matchType {
+        case .contains:
+            return compareValue.contains(comparePattern)
+        case .notContains:
+            return !compareValue.contains(comparePattern)
+        case .equals:
+            return compareValue == comparePattern
+        case .startsWith:
+            return compareValue.hasPrefix(comparePattern)
+        case .endsWith:
+            return compareValue.hasSuffix(comparePattern)
+        case .regex:
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: caseSensitive ? [] : .caseInsensitive) else {
+                return false
+            }
+            let range = NSRange(value.startIndex..., in: value)
+            return regex.firstMatch(in: value, options: [], range: range) != nil
+        }
+    }
+}
+
+// MARK: - Filter Group
+
+struct FilterGroup: Codable, Identifiable, Equatable, Hashable {
+    let id: UUID
+    var name: String
+    var filters: [EmailFilter]
+    var logic: GroupLogic  // How filters within this group are combined
+    var enabled: Bool
+    
+    // Server-side IMAP SEARCH (much faster!)
+    var useServerSearch: Bool
+    var serverSearchQuery: String  // e.g., "OR SUBJECT jxl FROM foolip"
+    
+    enum GroupLogic: String, Codable, CaseIterable {
+        case and = "AND"
+        case or = "OR"
+    }
+    
+    init(id: UUID = UUID(), name: String = "New Group", filters: [EmailFilter] = [], logic: GroupLogic = .or, enabled: Bool = true, useServerSearch: Bool = false, serverSearchQuery: String = "") {
+        self.id = id
+        self.name = name
+        self.filters = filters
+        self.logic = logic
+        self.enabled = enabled
+        self.useServerSearch = useServerSearch
+        self.serverSearchQuery = serverSearchQuery
+    }
+    
+    // Custom decoder for backward compatibility
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        filters = try container.decodeIfPresent([EmailFilter].self, forKey: .filters) ?? []
+        logic = try container.decodeIfPresent(GroupLogic.self, forKey: .logic) ?? .or
+        enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        useServerSearch = try container.decodeIfPresent(Bool.self, forKey: .useServerSearch) ?? false
+        serverSearchQuery = try container.decodeIfPresent(String.self, forKey: .serverSearchQuery) ?? ""
+    }
+    
+    /// Build IMAP SEARCH query from filters
+    func buildIMAPSearchQuery() -> String? {
+        guard useServerSearch else { return nil }
+        
+        // If custom query provided, use it
+        if !serverSearchQuery.isEmpty {
+            return serverSearchQuery
+        }
+        
+        // Otherwise build from filters
+        let includeFilters = filters.filter { $0.enabled && $0.filterType == .include && !$0.pattern.isEmpty }
+        guard !includeFilters.isEmpty else { return nil }
+        
+        var searchTerms: [String] = []
+        for filter in includeFilters {
+            let term: String
+            switch filter.field {
+            case .subject:
+                term = "SUBJECT \"\(filter.pattern)\""
+            case .from, .fromName, .fromEmail:
+                term = "FROM \"\(filter.pattern)\""
+            case .to:
+                term = "TO \"\(filter.pattern)\""
+            case .any:
+                term = "TEXT \"\(filter.pattern)\""
+            }
+            searchTerms.append(term)
+        }
+        
+        if searchTerms.isEmpty { return nil }
+        if searchTerms.count == 1 { return searchTerms[0] }
+        
+        // Combine with OR or AND
+        if logic == .or {
+            // IMAP OR syntax: OR term1 term2, for multiple: OR term1 OR term2 term3
+            var result = searchTerms[0]
+            for i in 1..<searchTerms.count {
+                result = "OR \(result) \(searchTerms[i])"
+            }
+            return result
+        } else {
+            // AND is implicit in IMAP - just space-separate
+            return searchTerms.joined(separator: " ")
+        }
+    }
+    
+    /// Check if email matches this group's filters
+    func matches(email: Email) -> Bool {
+        guard enabled else { return true }  // Disabled groups always pass
+        
+        let activeFilters = filters.filter { $0.enabled && !$0.pattern.isEmpty }
+        guard !activeFilters.isEmpty else { return true }  // No filters = pass
+        
+        let includeFilters = activeFilters.filter { $0.filterType == .include }
+        let excludeFilters = activeFilters.filter { $0.filterType == .exclude }
+        
+        // Exclude filters always use AND logic (if ANY exclude matches, reject)
+        for filter in excludeFilters {
+            if filter.matches(email: email) {
+                print("[Group:\(name)] EXCLUDED by '\(filter.field.rawValue) \(filter.matchType.rawValue) \(filter.pattern)' - from:\(email.from.prefix(30)), fromName:\(email.fromName.prefix(30))")
+                return false
+            }
+        }
+        
+        // If no include filters, pass (only excludes in this group)
+        guard !includeFilters.isEmpty else { 
+            return true 
+        }
+        
+        // Apply group logic to include filters
+        if logic == .and {
+            // ALL include filters must match
+            let result = includeFilters.allSatisfy { $0.matches(email: email) }
+            if !result {
+                print("[Group:\(name)] NOT MATCHED (AND) - subject:\(email.subject.prefix(40))")
+            }
+            return result
+        } else {
+            // ANY include filter must match
+            let result = includeFilters.contains { $0.matches(email: email) }
+            if !result {
+                print("[Group:\(name)] NOT MATCHED (OR) - subject:\(email.subject.prefix(40)), from:\(email.from.prefix(30))")
+            }
+            return result
+        }
+    }
+}
+
+// MARK: - Folder Config
+
 struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
     enum PopoverWidth: String, Codable {
         case small = "small"
@@ -16,18 +261,43 @@ struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
             }
         }
     }
+    
+    enum FilterLogic: String, Codable {
+        case and = "AND"
+        case or = "OR"
+    }
 
     let id: UUID
-    var name: String // Display name for the menubar
-    var folderPath: String // IMAP folder path
+    var name: String
+    var folderPath: String
     var enabled: Bool
-    var icon: String // SF Symbol name
-    var iconColor: String // Hex color for icon (e.g., "#FF0000")
-    var filterSender: String // Filter emails by sender (contains, case-insensitive)
-    var filterSubject: String // Filter emails by subject (contains, case-insensitive)
-    var popoverWidth: PopoverWidth // Popover size
+    var icon: String
+    var iconColor: String
+    var popoverWidth: PopoverWidth
+    
+    // Legacy simple filters (kept for backward compatibility)
+    var filterSender: String
+    var filterSubject: String
+    
+    // Legacy flat filters (for backward compatibility)
+    var filters: [EmailFilter]
+    var filterLogic: FilterLogic
+    
+    // NEW: Filter groups
+    var filterGroups: [FilterGroup]
+    var groupLogic: FilterLogic  // How groups are combined (AND/OR)
+    
+    var excludeOwnEmails: Bool
+    
+    // Cache settings
+    var lastSeenUID: UInt32
+    var cachedEmailCount: Int
+    
+    // Fetch settings
+    var maxEmails: Int
+    var daysToFetch: Int
 
-    init(id: UUID = UUID(), name: String, folderPath: String, enabled: Bool = true, icon: String = "envelope", iconColor: String = "", filterSender: String = "", filterSubject: String = "", popoverWidth: PopoverWidth = .medium) {
+    init(id: UUID = UUID(), name: String, folderPath: String, enabled: Bool = true, icon: String = "envelope", iconColor: String = "", filterSender: String = "", filterSubject: String = "", popoverWidth: PopoverWidth = .medium, filters: [EmailFilter] = [], filterLogic: FilterLogic = .and, filterGroups: [FilterGroup] = [], groupLogic: FilterLogic = .and, excludeOwnEmails: Bool = false, lastSeenUID: UInt32 = 0, cachedEmailCount: Int = 0, maxEmails: Int = 100, daysToFetch: Int = 0) {
         self.id = id
         self.name = name
         self.folderPath = folderPath
@@ -37,20 +307,60 @@ struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
         self.filterSender = filterSender
         self.filterSubject = filterSubject
         self.popoverWidth = popoverWidth
+        self.filters = filters
+        self.filterLogic = filterLogic
+        self.filterGroups = filterGroups
+        self.groupLogic = groupLogic
+        self.excludeOwnEmails = excludeOwnEmails
+        self.lastSeenUID = lastSeenUID
+        self.cachedEmailCount = cachedEmailCount
+        self.maxEmails = maxEmails
+        self.daysToFetch = daysToFetch
     }
 
-    // Custom decoding to handle missing popoverWidth in old configs
+    // Custom decoding to handle missing fields in old configs - BACKWARD COMPATIBLE
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        
+        // Required fields from original config
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
         folderPath = try container.decode(String.self, forKey: .folderPath)
         enabled = try container.decode(Bool.self, forKey: .enabled)
         icon = try container.decode(String.self, forKey: .icon)
+        
+        // Optional fields from original config (with defaults)
         iconColor = try container.decodeIfPresent(String.self, forKey: .iconColor) ?? ""
         filterSender = try container.decodeIfPresent(String.self, forKey: .filterSender) ?? ""
         filterSubject = try container.decodeIfPresent(String.self, forKey: .filterSubject) ?? ""
         popoverWidth = try container.decodeIfPresent(PopoverWidth.self, forKey: .popoverWidth) ?? .medium
+        
+        // Legacy flat filters
+        filters = try container.decodeIfPresent([EmailFilter].self, forKey: .filters) ?? []
+        filterLogic = try container.decodeIfPresent(FilterLogic.self, forKey: .filterLogic) ?? .and
+        
+        // NEW: Filter groups
+        filterGroups = try container.decodeIfPresent([FilterGroup].self, forKey: .filterGroups) ?? []
+        groupLogic = try container.decodeIfPresent(FilterLogic.self, forKey: .groupLogic) ?? .and
+        
+        excludeOwnEmails = try container.decodeIfPresent(Bool.self, forKey: .excludeOwnEmails) ?? false
+        lastSeenUID = try container.decodeIfPresent(UInt32.self, forKey: .lastSeenUID) ?? 0
+        cachedEmailCount = try container.decodeIfPresent(Int.self, forKey: .cachedEmailCount) ?? 0
+        maxEmails = try container.decodeIfPresent(Int.self, forKey: .maxEmails) ?? 100
+        daysToFetch = try container.decodeIfPresent(Int.self, forKey: .daysToFetch) ?? 0
+        
+        // Migrate legacy flat filters to a group if filterGroups is empty but filters exist
+        if filterGroups.isEmpty && !filters.isEmpty {
+            let legacyGroup = FilterGroup(
+                name: "Filters",
+                filters: filters,
+                logic: filterLogic == .and ? .and : .or
+            )
+            filterGroups = [legacyGroup]
+            print("📦 [FolderConfig] Migrated \(filters.count) legacy filters to group for '\(name)'")
+        }
+        
+        print("📦 [FolderConfig] Decoded '\(name)': groups=\(filterGroups.count), groupLogic=\(groupLogic.rawValue)")
     }
 
     var nsColor: NSColor {
@@ -60,20 +370,77 @@ struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
         return NSColor(hex: iconColor) ?? .labelColor
     }
 
-    func matchesFilters(email: Email) -> Bool {
-        // If no filters set, show all emails
+    func matchesFilters(email: Email, accountEmail: String = "") -> Bool {
+        // First check: exclude own emails if enabled
+        if excludeOwnEmails && !accountEmail.isEmpty {
+            let emailLower = accountEmail.lowercased()
+            if email.from.lowercased().contains(emailLower) {
+                return false
+            }
+        }
+        
+        // Use filter groups if available
+        let activeGroups = filterGroups.filter { $0.enabled }
+        
+        if !activeGroups.isEmpty {
+            if groupLogic == .and {
+                // ALL groups must match
+                for group in activeGroups {
+                    if !group.matches(email: email) {
+                        return false
+                    }
+                }
+                return true
+            } else {
+                // ANY group must match
+                return activeGroups.contains { $0.matches(email: email) }
+            }
+        }
+        
+        // Fall back to legacy flat filters
+        let activeFilters = filters.filter { $0.enabled && !$0.pattern.isEmpty }
+        
+        if !activeFilters.isEmpty {
+            let includeFilters = activeFilters.filter { $0.filterType == .include }
+            let excludeFilters = activeFilters.filter { $0.filterType == .exclude }
+            
+            // Exclude filters first
+            for filter in excludeFilters {
+                if filter.matches(email: email) {
+                    return false
+                }
+            }
+            
+            // Include filters
+            if !includeFilters.isEmpty {
+                if filterLogic == .and {
+                    for filter in includeFilters {
+                        if !filter.matches(email: email) {
+                            return false
+                        }
+                    }
+                } else {
+                    let anyMatch = includeFilters.contains { $0.matches(email: email) }
+                    if !anyMatch {
+                        return false
+                    }
+                }
+            }
+            
+            return true
+        }
+        
+        // Fall back to legacy simple filters
         if filterSender.isEmpty && filterSubject.isEmpty {
             return true
         }
 
         var matches = true
 
-        // Check sender filter
         if !filterSender.isEmpty {
             matches = matches && email.from.localizedCaseInsensitiveContains(filterSender)
         }
 
-        // Check subject filter
         if !filterSubject.isEmpty {
             matches = matches && email.subject.localizedCaseInsensitiveContains(filterSubject)
         }
@@ -84,11 +451,11 @@ struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
 
 struct IMAPAccount: Codable, Identifiable, Equatable, Hashable {
     let id: UUID
-    var name: String // Display name for the account
+    var name: String
     var host: String
     var port: Int
     var username: String
-    var password: String // Not persisted, loaded from Keychain
+    var password: String
     var useSSL: Bool
     var folders: [FolderConfig]
 
@@ -101,6 +468,13 @@ struct IMAPAccount: Codable, Identifiable, Equatable, Hashable {
         self.password = password
         self.useSSL = useSSL
         self.folders = folders
+    }
+    
+    var emailAddress: String {
+        if username.contains("@") {
+            return username
+        }
+        return username
     }
 }
 
@@ -122,20 +496,12 @@ struct AppConfig: Codable {
             return AppConfig(accounts: [])
         }
 
-        // Try to decode, with detailed error logging
         do {
             var config = try JSONDecoder().decode(AppConfig.self, from: data)
 
-            // Load passwords from Keychain for each account
             for i in 0..<config.accounts.count {
                 let account = config.accounts[i]
                 config.accounts[i].password = KeychainHelper.getPassword(for: account.username, host: account.host) ?? ""
-
-                // Debug: log folder icons
-                print("🔍 [AppConfig.load] Account '\(account.name)' folders:")
-                for folder in account.folders {
-                    print("    - '\(folder.name)': icon='\(folder.icon)', color='\(folder.iconColor)', width=\(folder.popoverWidth.rawValue)")
-                }
             }
 
             return config
@@ -149,11 +515,9 @@ struct AppConfig: Codable {
     }
 
     func save() {
-        // Save config without passwords to UserDefaults
         var configToSave = self
         for i in 0..<configToSave.accounts.count {
             let account = configToSave.accounts[i]
-            // Save password to Keychain if not empty
             if !account.password.isEmpty {
                 KeychainHelper.savePassword(account.password, for: account.username, host: account.host)
             }
@@ -164,6 +528,14 @@ struct AppConfig: Codable {
             UserDefaults.standard.set(data, forKey: "AppConfig")
         }
     }
+    
+    mutating func updateLastSeenUID(accountId: UUID, folderId: UUID, uid: UInt32) {
+        if let accountIndex = accounts.firstIndex(where: { $0.id == accountId }),
+           let folderIndex = accounts[accountIndex].folders.firstIndex(where: { $0.id == folderId }) {
+            accounts[accountIndex].folders[folderIndex].lastSeenUID = uid
+            save()
+        }
+    }
 }
 
 class KeychainHelper {
@@ -172,7 +544,6 @@ class KeychainHelper {
     static func savePassword(_ password: String, for username: String, host: String) {
         let account = "\(username)@\(host)"
 
-        // Delete existing item first
         let deleteQuery: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -180,7 +551,6 @@ class KeychainHelper {
         ]
         SecItemDelete(deleteQuery as CFDictionary)
 
-        // Add new item
         guard let passwordData = password.data(using: .utf8) else { return }
 
         let addQuery: [String: Any] = [

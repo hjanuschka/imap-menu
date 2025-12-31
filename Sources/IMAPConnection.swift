@@ -9,6 +9,7 @@ enum IMAPError: Error, LocalizedError {
     case invalidResponse(String)
     case timeout
     case noMessages
+    case notConnected
 
     var errorDescription: String? {
         switch self {
@@ -19,6 +20,7 @@ enum IMAPError: Error, LocalizedError {
         case .invalidResponse(let msg): return "Invalid response: \(msg)"
         case .timeout: return "Connection timeout"
         case .noMessages: return "No messages in folder"
+        case .notConnected: return "Not connected to server"
         }
     }
 }
@@ -29,6 +31,20 @@ class IMAPConnection {
     private var outputStream: OutputStream?
     private var tagCounter = 0
     private let timeout: TimeInterval = 30
+    private var _isConnected = false
+    private var currentFolder: String?
+    private let connectionQueue = DispatchQueue(label: "com.imapmenu.connection")
+    
+    var isConnected: Bool {
+        connectionQueue.sync {
+            guard _isConnected,
+                  let input = inputStream,
+                  let output = outputStream else {
+                return false
+            }
+            return input.streamStatus == .open && output.streamStatus == .open
+        }
+    }
 
     init(config: IMAPConfig) {
         self.config = config
@@ -56,7 +72,6 @@ class IMAPConnection {
 
         self.inputStream = inputStream
         self.outputStream = outputStream
-        print("[IMAP] Streams created: \(Date().timeIntervalSince(connectStart))s")
 
         if config.useSSL {
             inputStream.setProperty(StreamSocketSecurityLevel.negotiatedSSL, forKey: .socketSecurityLevelKey)
@@ -69,30 +84,34 @@ class IMAPConnection {
             outputStream.setProperty(sslSettings, forKey: kCFStreamPropertySSLSettings as Stream.PropertyKey)
         }
 
-        print("[IMAP] Opening streams...")
         inputStream.open()
         outputStream.open()
 
         let startTime = Date()
         while inputStream.streamStatus != .open || outputStream.streamStatus != .open {
             if Date().timeIntervalSince(startTime) > timeout {
-                print("[IMAP] Timeout! Input: \(inputStream.streamStatus.rawValue), Output: \(outputStream.streamStatus.rawValue)")
                 throw IMAPError.timeout
             }
             Thread.sleep(forTimeInterval: 0.01)
         }
-        print("[IMAP] Streams open: \(Date().timeIntervalSince(connectStart))s")
 
-        print("[IMAP] Reading server greeting...")
         _ = try readResponse()
         print("[IMAP] Greeting received: \(Date().timeIntervalSince(connectStart))s")
 
-        print("[IMAP] Logging in...")
         try login()
+        
+        connectionQueue.sync {
+            _isConnected = true
+        }
+        
         print("[IMAP] Login complete: \(Date().timeIntervalSince(connectStart))s")
     }
 
     func disconnect() {
+        connectionQueue.sync {
+            _isConnected = false
+            currentFolder = nil
+        }
         _ = try? sendCommand("LOGOUT")
         inputStream?.close()
         outputStream?.close()
@@ -106,42 +125,99 @@ class IMAPConnection {
             throw IMAPError.authenticationFailed
         }
     }
-
-    func fetchEmails(folder: String, limit: Int, daysBack: Int = 7) throws -> [Email] {
-        let fetchStart = Date()
+    
+    // MARK: - Optimized Folder Selection
+    
+    private func selectFolder(_ folder: String) throws {
+        // Skip if already selected
+        if currentFolder == folder {
+            print("[IMAP] Folder '\(folder)' already selected, skipping SELECT")
+            return
+        }
+        
         let encodedFolder = encodeModifiedUTF7(folder)
-        print("[IMAP] SELECT folder: \(encodedFolder)")
         let selectResponse = try sendCommand("SELECT \"\(encodedFolder)\"")
-        print("[IMAP] SELECT completed: \(Date().timeIntervalSince(fetchStart))s")
-
+        
         let lines = selectResponse.components(separatedBy: "\r\n")
-        var hasError = false
-
         for line in lines {
             if line.contains(" NO ") || line.contains(" BAD ") {
                 if line.contains("SELECT") || line.hasPrefix("A") {
-                    hasError = true
+                    throw IMAPError.folderNotFound(folder)
                 }
             }
         }
+        
+        currentFolder = folder
+    }
 
-        if hasError {
-            throw IMAPError.folderNotFound(folder)
+    // MARK: - Delta Fetch (fetch only new emails since UID)
+    
+    func fetchEmailsSince(folder: String, sinceUID: UInt32, limit: Int) throws -> [Email] {
+        let fetchStart = Date()
+        
+        try selectFolder(folder)
+        
+        // Search for UIDs greater than the last known UID
+        let searchResponse = try sendCommand("UID SEARCH UID \(sinceUID + 1):*")
+        
+        var uids: [UInt32] = []
+        for line in searchResponse.components(separatedBy: "\r\n") {
+            if line.hasPrefix("* SEARCH") {
+                let parts = line.replacingOccurrences(of: "* SEARCH", with: "")
+                    .trimmingCharacters(in: .whitespaces)
+                    .split(separator: " ")
+                for part in parts {
+                    if let uid = UInt32(part), uid > sinceUID {
+                        uids.append(uid)
+                    }
+                }
+            }
+        }
+        
+        guard !uids.isEmpty else {
+            print("[IMAP] No new messages since UID \(sinceUID)")
+            return []
+        }
+        
+        let recentUIDs = uids.suffix(limit)
+        let uidList = recentUIDs.map { String($0) }.joined(separator: ",")
+        print("[IMAP] Delta fetch: \(recentUIDs.count) new emails (UIDs: \(uidList.prefix(50))...)")
+        
+        let fetchResponse = try sendCommand("UID FETCH \(uidList) (UID FLAGS BODY.PEEK[HEADER])")
+        
+        let emails = parseEmailsHeadersOnly(from: fetchResponse)
+        print("[IMAP] Delta fetch completed in \(Date().timeIntervalSince(fetchStart))s")
+        
+        return emails
+    }
+
+    func fetchEmails(folder: String, limit: Int, daysBack: Int = 0, searchQuery: String? = nil) throws -> [Email] {
+        let fetchStart = Date()
+        
+        try selectFolder(folder)
+        print("[IMAP] SELECT completed: \(Date().timeIntervalSince(fetchStart))s")
+
+        // Build search command
+        var searchCommand: String
+        
+        if let query = searchQuery, !query.isEmpty {
+            // Use custom IMAP search query (server-side filtering!)
+            searchCommand = "UID SEARCH \(query)"
+            print("[IMAP] Using server-side search: \(query)")
+        } else if daysBack > 0 {
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateFormat = "dd-MMM-yyyy"
+            dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+            let sinceDate = Calendar.current.date(byAdding: .day, value: -daysBack, to: Date()) ?? Date()
+            let sinceDateStr = dateFormatter.string(from: sinceDate)
+            searchCommand = "UID SEARCH SINCE \(sinceDateStr)"
+        } else {
+            searchCommand = "UID SEARCH ALL"
         }
 
-        // Search for emails from the last N days
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "dd-MMM-yyyy"
-        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
-        let sinceDate = Calendar.current.date(byAdding: .day, value: -daysBack, to: Date()) ?? Date()
-        let sinceDateStr = dateFormatter.string(from: sinceDate)
-
-        print("[IMAP] SEARCH SINCE \(sinceDateStr)")
-        let searchResponse = try sendCommand("UID SEARCH SINCE \(sinceDateStr)")
+        let searchResponse = try sendCommand(searchCommand)
         print("[IMAP] SEARCH completed: \(Date().timeIntervalSince(fetchStart))s")
 
-        // Parse UIDs from search response
-        // Format: * SEARCH 123 456 789 ...
         var uids: [UInt32] = []
         for line in searchResponse.components(separatedBy: "\r\n") {
             if line.hasPrefix("* SEARCH") {
@@ -157,20 +233,25 @@ class IMAPConnection {
         }
 
         guard !uids.isEmpty else {
-            print("[IMAP] No messages found in last \(daysBack) days")
+            print("[IMAP] No messages found")
             return []
         }
+        
+        print("[IMAP] Found \(uids.count) messages matching search")
 
-        // Take the most recent ones (last N UIDs)
-        let recentUIDs = uids.suffix(limit)
+        // If limit is 0, fetch all; otherwise take the most recent N
+        let recentUIDs: ArraySlice<UInt32>
+        if limit > 0 {
+            recentUIDs = uids.suffix(limit)
+        } else {
+            recentUIDs = uids[...]
+        }
         let uidList = recentUIDs.map { String($0) }.joined(separator: ",")
-        print("[IMAP] Fetching \(recentUIDs.count) emails (UIDs: \(uidList.prefix(50))...)")
+        print("[IMAP] Fetching \(recentUIDs.count) emails")
 
-        // Fetch only headers initially - body will be loaded on demand
         let fetchResponse = try sendCommand("UID FETCH \(uidList) (UID FLAGS BODY.PEEK[HEADER])")
-        print("[IMAP] FETCH completed: \(Date().timeIntervalSince(fetchStart))s, response size: \(fetchResponse.count) bytes")
+        print("[IMAP] FETCH completed: \(Date().timeIntervalSince(fetchStart))s")
 
-        print("[IMAP] Parsing emails...")
         let emails = parseEmailsHeadersOnly(from: fetchResponse)
         print("[IMAP] Parsing completed: \(Date().timeIntervalSince(fetchStart))s")
 
@@ -183,36 +264,25 @@ class IMAPConnection {
 
         let lines = response.components(separatedBy: "\r\n")
         for line in lines {
-            // Match lines like: * LIST (\HasNoChildren) "/" "FolderName"
-            // or: * LIST (\HasNoChildren) "/" INBOX
             if line.hasPrefix("* LIST") {
-                // Find delimiter and folder name after it
-                // Format: * LIST (flags) "delimiter" "foldername" or * LIST (flags) "delimiter" foldername
-
-                // Find the closing paren of flags
                 guard let flagsEnd = line.range(of: ") ") else { continue }
                 let afterFlags = String(line[flagsEnd.upperBound...])
 
-                // afterFlags is now: "/" "FolderName" or "/" INBOX or "." "Folder.Name"
                 let parts = afterFlags.components(separatedBy: " ")
                 guard parts.count >= 2 else { continue }
 
-                // Skip the delimiter (first part), get folder name (rest)
                 let folderPart = parts.dropFirst().joined(separator: " ")
 
                 var folderName = folderPart.trimmingCharacters(in: .whitespaces)
 
-                // Remove surrounding quotes if present
                 if folderName.hasPrefix("\"") && folderName.hasSuffix("\"") {
                     folderName = String(folderName.dropFirst().dropLast())
                 }
 
-                // Skip empty or delimiter-only entries
                 if folderName.isEmpty || folderName == "/" || folderName == "." {
                     continue
                 }
 
-                // Decode modified UTF-7
                 let decoded = decodeModifiedUTF7(folderName)
                 folders.append(decoded)
             }
@@ -222,8 +292,7 @@ class IMAPConnection {
     }
 
     func markAsRead(folder: String, uid: UInt32) throws {
-        let encodedFolder = encodeModifiedUTF7(folder)
-        _ = try sendCommand("SELECT \"\(encodedFolder)\"")
+        try selectFolder(folder)
         let response = try sendCommand("UID STORE \(uid) +FLAGS (\\Seen)")
         if response.contains(" NO ") || response.contains(" BAD ") {
             throw IMAPError.fetchFailed("Failed to mark as read")
@@ -231,8 +300,7 @@ class IMAPConnection {
     }
 
     func markAsUnread(folder: String, uid: UInt32) throws {
-        let encodedFolder = encodeModifiedUTF7(folder)
-        _ = try sendCommand("SELECT \"\(encodedFolder)\"")
+        try selectFolder(folder)
         let response = try sendCommand("UID STORE \(uid) -FLAGS (\\Seen)")
         if response.contains(" NO ") || response.contains(" BAD ") {
             throw IMAPError.fetchFailed("Failed to mark as unread")
@@ -240,14 +308,11 @@ class IMAPConnection {
     }
 
     func deleteEmail(folder: String, uid: UInt32) throws {
-        let encodedFolder = encodeModifiedUTF7(folder)
-        _ = try sendCommand("SELECT \"\(encodedFolder)\"")
-        // Mark as deleted
+        try selectFolder(folder)
         let response = try sendCommand("UID STORE \(uid) +FLAGS (\\Deleted)")
         if response.contains(" NO ") || response.contains(" BAD ") {
             throw IMAPError.fetchFailed("Failed to delete email")
         }
-        // Expunge to permanently remove
         let expungeResponse = try sendCommand("EXPUNGE")
         if expungeResponse.contains(" NO ") || expungeResponse.contains(" BAD ") {
             throw IMAPError.fetchFailed("Failed to expunge deleted email")
@@ -255,39 +320,35 @@ class IMAPConnection {
     }
 
     func fetchFullMessage(folder: String, uid: UInt32) throws -> String {
-        let encodedFolder = encodeModifiedUTF7(folder)
-        _ = try sendCommand("SELECT \"\(encodedFolder)\"")
+        try selectFolder(folder)
 
-        // Fetch the complete message body
         let response = try sendCommand("UID FETCH \(uid) (BODY.PEEK[])")
 
-        print("[IMAP] fetchFullMessage response length: \(response.count)")
-
-        // Extract the body from the response
-        // Format: * N FETCH (UID X BODY[] {size}\r\n<content>)\r\n
         if let bodyStart = response.range(of: "BODY[]") {
             let afterBody = response[bodyStart.upperBound...]
-            if let braceStart = afterBody.range(of: "{"),
+            if let _ = afterBody.range(of: "{"),
                let braceEnd = afterBody.range(of: "}") {
-                // Get size
-                let sizeStr = String(afterBody[braceStart.upperBound..<braceEnd.lowerBound])
-                print("[IMAP] Body size from header: \(sizeStr)")
-
-                // Content starts after }\r\n
                 let contentStart = afterBody.index(braceEnd.upperBound, offsetBy: 2, limitedBy: afterBody.endIndex) ?? braceEnd.upperBound
                 var content = String(afterBody[contentStart...])
 
-                // Remove trailing IMAP response
                 if let closeIdx = content.range(of: ")\r\nA", options: .backwards) {
                     content = String(content[..<closeIdx.lowerBound])
                 }
 
-                print("[IMAP] Full message content length: \(content.count)")
                 return content
             }
         }
 
         return ""
+    }
+    
+    // MARK: - NOOP for keep-alive
+    
+    func noop() throws {
+        let response = try sendCommand("NOOP")
+        if !response.contains("OK") {
+            throw IMAPError.connectionFailed("NOOP failed")
+        }
     }
 
     // MARK: - Modified UTF-7 Encoding
@@ -403,6 +464,10 @@ class IMAPConnection {
 
     @discardableResult
     private func sendCommand(_ command: String) throws -> String {
+        guard isConnected || command.hasPrefix("LOGIN") || command == "LOGOUT" else {
+            throw IMAPError.notConnected
+        }
+        
         let tag = nextTag()
         let fullCommand = "\(tag) \(command)\r\n"
 
@@ -416,6 +481,7 @@ class IMAPConnection {
         }
 
         if bytesWritten < 0 {
+            connectionQueue.sync { _isConnected = false }
             throw IMAPError.connectionFailed("Failed to write to stream")
         }
 
@@ -434,6 +500,7 @@ class IMAPConnection {
 
         while true {
             if Date().timeIntervalSince(startTime) > timeout {
+                connectionQueue.sync { _isConnected = false }
                 throw IMAPError.timeout
             }
 
@@ -456,27 +523,15 @@ class IMAPConnection {
                         }
                     }
                 } else if bytesRead < 0 {
+                    connectionQueue.sync { _isConnected = false }
                     throw IMAPError.connectionFailed("Read error")
                 }
             } else {
-                Thread.sleep(forTimeInterval: 0.05)
+                Thread.sleep(forTimeInterval: 0.01)
             }
         }
 
         return response
-    }
-
-    private func parseEmails(from response: String) -> [Email] {
-        var emails: [Email] = []
-        let blocks = response.components(separatedBy: "* ").filter { $0.contains("FETCH") }
-
-        for block in blocks {
-            if let email = parseEmailBlock(block) {
-                emails.append(email)
-            }
-        }
-
-        return emails
     }
 
     private func parseEmailsHeadersOnly(from response: String) -> [Email] {
@@ -493,182 +548,97 @@ class IMAPConnection {
     }
 
     private func parseEmailHeaderOnly(_ block: String) -> Email? {
-        // Extract UID
         var uid: UInt32 = 0
         if let uidMatch = block.range(of: #"UID (\d+)"#, options: .regularExpression) {
             let uidStr = String(block[uidMatch]).replacingOccurrences(of: "UID ", with: "")
             uid = UInt32(uidStr) ?? 0
         }
 
-        // Extract flags
         var isRead = false
         if let flagsMatch = block.range(of: #"FLAGS \([^)]*\)"#, options: .regularExpression) {
             let flags = String(block[flagsMatch])
             isRead = flags.contains("\\Seen")
         }
 
-        // Extract headers
         var subject = ""
         var from = ""
+        var to = ""
         var date = Date()
         var contentType = "text/plain"
         var boundary = ""
 
-        // Find BODY[HEADER] section - look for the size in braces, then content after
-        // Format: BODY[HEADER] {1234}\r\n<headers>
         if let headerMarker = block.range(of: "BODY[HEADER]") {
             let afterMarker = block[headerMarker.upperBound...]
 
-            // Find the opening brace with size
-            if let braceStart = afterMarker.range(of: "{"),
+            if let _ = afterMarker.range(of: "{"),
                let braceEnd = afterMarker.range(of: "}") {
-                // Content starts after }\r\n
                 let afterBrace = afterMarker[braceEnd.upperBound...]
                 var headers = String(afterBrace)
 
-                // Skip the \r\n after the brace
                 if headers.hasPrefix("\r\n") {
                     headers = String(headers.dropFirst(2))
                 }
 
-                // Parse headers line by line
                 let headerLines = headers.components(separatedBy: "\r\n")
                 var currentHeader = ""
 
                 for line in headerLines {
-                    // Stop if we hit end of headers (empty line or closing paren)
                     if line.isEmpty || line == ")" || line.hasPrefix(")") {
                         break
                     }
 
                     if line.hasPrefix(" ") || line.hasPrefix("\t") {
-                        // Continuation of previous header
                         currentHeader += " " + line.trimmingCharacters(in: .whitespaces)
                     } else {
-                        // Process previous header and start new one
                         if !currentHeader.isEmpty {
-                            processHeader(currentHeader, subject: &subject, from: &from, date: &date, contentType: &contentType, boundary: &boundary)
+                            processHeader(currentHeader, subject: &subject, from: &from, to: &to, date: &date, contentType: &contentType, boundary: &boundary)
                         }
                         currentHeader = line
                     }
                 }
-                // Process last header
                 if !currentHeader.isEmpty {
-                    processHeader(currentHeader, subject: &subject, from: &from, date: &date, contentType: &contentType, boundary: &boundary)
+                    processHeader(currentHeader, subject: &subject, from: &from, to: &to, date: &date, contentType: &contentType, boundary: &boundary)
                 }
             }
         }
 
         guard uid > 0 else { return nil }
 
+        // Parse from field into name and email components
+        let fromDisplay = from.isEmpty ? "Unknown Sender" : from
+        let parsedFrom = Email.parseFromField(fromDisplay)
+
         return Email(
             id: "\(uid)",
             uid: uid,
             subject: subject.isEmpty ? "No Subject" : subject,
-            from: from.isEmpty ? "Unknown Sender" : from,
+            from: fromDisplay,
+            fromEmail: parsedFrom.email,
+            fromName: parsedFrom.name,
+            to: to,
             date: date,
-            preview: "", // No preview - body loaded on demand
-            body: "",    // Body loaded on demand
+            preview: "",
+            body: "",
             contentType: contentType,
             boundary: boundary,
             isRead: isRead
         )
     }
 
-    private func parseEmailBlock(_ block: String) -> Email? {
-        // Extract UID
-        var uid: UInt32 = 0
-        if let uidMatch = block.range(of: #"UID (\d+)"#, options: .regularExpression) {
-            let uidStr = String(block[uidMatch]).replacingOccurrences(of: "UID ", with: "")
-            uid = UInt32(uidStr) ?? 0
-        }
-
-        // Extract flags
-        var isRead = false
-        if let flagsMatch = block.range(of: #"FLAGS \([^)]*\)"#, options: .regularExpression) {
-            let flags = String(block[flagsMatch])
-            isRead = flags.contains("\\Seen")
-        }
-
-        // Extract headers
-        var subject = ""
-        var from = ""
-        var date = Date()
-        var contentType = "text/plain"
-        var boundary = ""
-
-        // Find BODY[HEADER] section
-        if let headerStart = block.range(of: "BODY[HEADER]") {
-            let afterHeader = block[headerStart.upperBound...]
-            if let braceEnd = afterHeader.range(of: "}") {
-                let headerContent = String(afterHeader[braceEnd.upperBound...])
-                let headerEnd = headerContent.range(of: "BODY[TEXT]")?.lowerBound ?? headerContent.endIndex
-                let headers = String(headerContent[..<headerEnd])
-
-                // Parse headers
-                let headerLines = headers.components(separatedBy: "\r\n")
-                var currentHeader = ""
-
-                for line in headerLines {
-                    if line.hasPrefix(" ") || line.hasPrefix("\t") {
-                        // Continuation of previous header
-                        currentHeader += " " + line.trimmingCharacters(in: .whitespaces)
-                    } else {
-                        // Process previous header
-                        processHeader(currentHeader, subject: &subject, from: &from, date: &date, contentType: &contentType, boundary: &boundary)
-                        currentHeader = line
-                    }
-                }
-                processHeader(currentHeader, subject: &subject, from: &from, date: &date, contentType: &contentType, boundary: &boundary)
-            }
-        }
-
-        // Extract body
-        var body = ""
-        if let bodyMarker = block.range(of: "BODY[TEXT]") {
-            let afterMarker = block[bodyMarker.upperBound...]
-            if let braceEnd = afterMarker.range(of: "}") {
-                var bodyContent = String(afterMarker[braceEnd.upperBound...])
-                // Clean up trailing IMAP stuff
-                if let closeIdx = bodyContent.range(of: ")\r\nA") {
-                    bodyContent = String(bodyContent[..<closeIdx.lowerBound])
-                }
-                body = bodyContent
-            }
-        }
-
-        // Create preview using MIMEParser
-        let preview = MIMEParser.createPreview(from: body, boundary: boundary)
-
-        guard uid > 0 else { return nil }
-
-        return Email(
-            id: "\(uid)",
-            uid: uid,
-            subject: subject.isEmpty ? "No Subject" : subject,
-            from: from.isEmpty ? "Unknown Sender" : from,
-            date: date,
-            preview: preview,
-            body: body,
-            contentType: contentType,
-            boundary: boundary,
-            isRead: isRead
-        )
-    }
-
-    private func processHeader(_ header: String, subject: inout String, from: inout String, date: inout Date, contentType: inout String, boundary: inout String) {
+    private func processHeader(_ header: String, subject: inout String, from: inout String, to: inout String, date: inout Date, contentType: inout String, boundary: inout String) {
         let lower = header.lowercased()
 
         if lower.hasPrefix("subject:") {
             subject = decodeHeader(String(header.dropFirst(8)).trimmingCharacters(in: .whitespaces))
         } else if lower.hasPrefix("from:") {
             from = parseFromHeader(String(header.dropFirst(5)).trimmingCharacters(in: .whitespaces))
+        } else if lower.hasPrefix("to:") {
+            to = parseFromHeader(String(header.dropFirst(3)).trimmingCharacters(in: .whitespaces))
         } else if lower.hasPrefix("date:") {
             date = parseDate(String(header.dropFirst(5)).trimmingCharacters(in: .whitespaces)) ?? Date()
         } else if lower.hasPrefix("content-type:") {
             let ct = String(header.dropFirst(13)).trimmingCharacters(in: .whitespaces)
             contentType = ct
-            // Extract boundary if multipart
             if let boundaryRange = ct.range(of: #"boundary="?([^";\s]+)"?"#, options: .regularExpression) {
                 var b = String(ct[boundaryRange])
                 b = b.replacingOccurrences(of: "boundary=", with: "")
@@ -679,9 +649,8 @@ class IMAPConnection {
     }
 
     private func parseFromHeader(_ from: String) -> String {
-        var decoded = decodeHeader(from)
+        let decoded = decodeHeader(from)
 
-        // Try to extract display name from "Name <email>" format
         if let angleStart = decoded.firstIndex(of: "<") {
             let name = String(decoded[..<angleStart]).trimmingCharacters(in: .whitespaces)
             if !name.isEmpty {
@@ -689,7 +658,6 @@ class IMAPConnection {
             }
         }
 
-        // Just return decoded email
         return decoded.replacingOccurrences(of: "\"", with: "")
     }
 
@@ -730,7 +698,6 @@ class IMAPConnection {
                 }
             }
 
-            // Check for more encoded words
             matches = regex.matches(in: result, options: [], range: NSRange(result.startIndex..., in: result))
         }
 
@@ -755,7 +722,7 @@ class IMAPConnection {
         while i < string.endIndex {
             let char = string[i]
             if char == "_" {
-                bytes.append(0x20) // space
+                bytes.append(0x20)
             } else if char == "=" {
                 let nextIdx = string.index(after: i)
                 if nextIdx < string.endIndex,

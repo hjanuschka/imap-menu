@@ -5,7 +5,10 @@ struct Email: Identifiable, Hashable {
     let id: String
     let uid: UInt32
     let subject: String
-    let from: String
+    let from: String           // Full "Name <email>" or just display name
+    let fromEmail: String      // Just the email address (extracted)
+    let fromName: String       // Just the display name (extracted)
+    let to: String
     let date: Date
     let preview: String
     let body: String
@@ -26,9 +29,218 @@ struct Email: Identifiable, Hashable {
         let mimeParser = MIMEParser(body: body, contentType: contentType, boundary: boundary)
         return mimeParser.getHTMLContent()
     }
+    
+    // Parse "Display Name <email@example.com>" into components
+    static func parseFromField(_ from: String) -> (name: String, email: String) {
+        let trimmed = from.trimmingCharacters(in: .whitespaces)
+        
+        // Check for "Name <email>" format
+        if let angleStart = trimmed.firstIndex(of: "<"),
+           let angleEnd = trimmed.firstIndex(of: ">") {
+            let name = String(trimmed[..<angleStart])
+                .trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "\"", with: "")
+            let email = String(trimmed[trimmed.index(after: angleStart)..<angleEnd])
+                .trimmingCharacters(in: .whitespaces)
+            return (name.isEmpty ? email : name, email)
+        }
+        
+        // Just an email address or name
+        if trimmed.contains("@") {
+            return (trimmed, trimmed)
+        }
+        
+        return (trimmed, "")
+    }
 }
 
-// MIME Parser for extracting HTML/text content
+// MARK: - Email Cache for Speed
+
+class EmailCache {
+    static let shared = EmailCache()
+    
+    private var cache: [String: [Email]] = [:] // folder path -> emails
+    private var lastFetchTime: [String: Date] = [:]
+    private var highestUID: [String: UInt32] = [:]
+    
+    private let cacheQueue = DispatchQueue(label: "com.imapmenu.cache", attributes: .concurrent)
+    
+    func getCachedEmails(for folderPath: String) -> [Email]? {
+        cacheQueue.sync {
+            return cache[folderPath]
+        }
+    }
+    
+    func setCachedEmails(_ emails: [Email], for folderPath: String) {
+        cacheQueue.async(flags: .barrier) {
+            self.cache[folderPath] = emails
+            self.lastFetchTime[folderPath] = Date()
+            if let maxUID = emails.map({ $0.uid }).max() {
+                self.highestUID[folderPath] = maxUID
+            }
+        }
+    }
+    
+    func getHighestUID(for folderPath: String) -> UInt32 {
+        cacheQueue.sync {
+            return highestUID[folderPath] ?? 0
+        }
+    }
+    
+    func mergeNewEmails(_ newEmails: [Email], for folderPath: String, maxEmails: Int = 0) -> [Email] {
+        cacheQueue.sync {
+            var existing = cache[folderPath] ?? []
+            let existingUIDs = Set(existing.map { $0.uid })
+            
+            for email in newEmails where !existingUIDs.contains(email.uid) {
+                existing.append(email)
+            }
+            
+            // Sort by date descending
+            existing.sort { $0.date > $1.date }
+            
+            // Limit only if maxEmails > 0
+            if maxEmails > 0 && existing.count > maxEmails {
+                existing = Array(existing.prefix(maxEmails))
+            }
+            
+            return existing
+        }
+    }
+    
+    func updateEmail(_ email: Email, for folderPath: String) {
+        cacheQueue.async(flags: .barrier) {
+            if var emails = self.cache[folderPath],
+               let index = emails.firstIndex(where: { $0.id == email.id }) {
+                emails[index] = email
+                self.cache[folderPath] = emails
+            }
+        }
+    }
+    
+    func removeEmail(uid: UInt32, from folderPath: String) {
+        cacheQueue.async(flags: .barrier) {
+            self.cache[folderPath]?.removeAll { $0.uid == uid }
+        }
+    }
+    
+    func invalidate(folderPath: String) {
+        cacheQueue.async(flags: .barrier) {
+            self.cache.removeValue(forKey: folderPath)
+            self.lastFetchTime.removeValue(forKey: folderPath)
+            self.highestUID.removeValue(forKey: folderPath)
+        }
+    }
+    
+    func isCacheValid(for folderPath: String, maxAge: TimeInterval = 300) -> Bool {
+        cacheQueue.sync {
+            guard let lastFetch = lastFetchTime[folderPath] else { return false }
+            return Date().timeIntervalSince(lastFetch) < maxAge
+        }
+    }
+}
+
+// MARK: - Connection Pool for Speed
+
+class IMAPConnectionPool {
+    static let shared = IMAPConnectionPool()
+
+    private var connections: [String: IMAPConnection] = [:] // host:user:folder -> connection
+    private var inUse: Set<String> = [] // Track which connections are currently in use
+    private var lastUsed: [String: Date] = [:]
+    private let poolQueue = DispatchQueue(label: "com.imapmenu.pool")
+    private var cleanupTimer: Timer?
+
+    init() {
+        // Cleanup idle connections every 2 minutes
+        DispatchQueue.main.async {
+            self.cleanupTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
+                self?.cleanupIdleConnections()
+            }
+        }
+    }
+
+    private func connectionKey(for config: IMAPConfig, folder: String) -> String {
+        return "\(config.host):\(config.username):\(folder)"
+    }
+
+    func getConnection(for config: IMAPConfig, folder: String) throws -> IMAPConnection {
+        let key = connectionKey(for: config, folder: folder)
+
+        return try poolQueue.sync {
+            // Check if connection exists and is not in use
+            if let existing = connections[key], !inUse.contains(key) {
+                if existing.isConnected {
+                    inUse.insert(key)
+                    lastUsed[key] = Date()
+                    print("[ConnectionPool] Reusing connection for \(key)")
+                    return existing
+                } else {
+                    // Remove dead connection
+                    connections.removeValue(forKey: key)
+                }
+            }
+
+            // If connection is in use, create a new temporary one
+            if inUse.contains(key) {
+                print("[ConnectionPool] Connection in use, creating temporary for \(key)")
+                let tempConnection = IMAPConnection(config: config)
+                try tempConnection.connect()
+                return tempConnection
+            }
+
+            // Create new connection
+            print("[ConnectionPool] Creating new connection for \(key)")
+            let connection = IMAPConnection(config: config)
+            try connection.connect()
+
+            connections[key] = connection
+            inUse.insert(key)
+            lastUsed[key] = Date()
+
+            return connection
+        }
+    }
+
+    func returnConnection(_ connection: IMAPConnection, for config: IMAPConfig, folder: String) {
+        let key = connectionKey(for: config, folder: folder)
+        poolQueue.sync {
+            inUse.remove(key)
+            lastUsed[key] = Date()
+        }
+    }
+
+    func invalidateConnection(for config: IMAPConfig, folder: String) {
+        let key = connectionKey(for: config, folder: folder)
+        poolQueue.sync {
+            if let conn = connections.removeValue(forKey: key) {
+                conn.disconnect()
+            }
+            inUse.remove(key)
+            lastUsed.removeValue(forKey: key)
+        }
+    }
+
+    private func cleanupIdleConnections() {
+        let maxIdleTime: TimeInterval = 300 // 5 minutes
+        let now = Date()
+
+        poolQueue.sync {
+            for (key, lastUse) in lastUsed {
+                // Only cleanup if not in use and idle for too long
+                if !inUse.contains(key) && now.timeIntervalSince(lastUse) > maxIdleTime {
+                    print("[ConnectionPool] Closing idle connection: \(key)")
+                    connections[key]?.disconnect()
+                    connections.removeValue(forKey: key)
+                    lastUsed.removeValue(forKey: key)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - MIME Parser
+
 class MIMEParser {
     let body: String
     let contentType: String
@@ -41,46 +253,29 @@ class MIMEParser {
     }
 
     func getHTMLContent() -> String {
-        print("[MIMEParser] Starting getHTMLContent")
-        print("[MIMEParser] Body length: \(body.count)")
-        print("[MIMEParser] ContentType: \(contentType)")
-        print("[MIMEParser] Boundary from header: \(boundary)")
-
-        // First, try to find boundary in body if not provided
         var effectiveBoundary = boundary
         if effectiveBoundary.isEmpty {
             effectiveBoundary = findBoundaryInBody()
-            print("[MIMEParser] Found boundary in body: \(effectiveBoundary)")
         }
 
-        // Check if it's multipart
         if !effectiveBoundary.isEmpty && body.contains("--" + effectiveBoundary) {
-            print("[MIMEParser] Parsing as multipart")
             let result = parseMultipart(boundary: effectiveBoundary)
-            print("[MIMEParser] Multipart result length: \(result.count)")
             if !result.isEmpty {
                 return result
             }
         }
 
-        // Single part - decode based on content type
         if contentType.lowercased().contains("text/html") {
-            print("[MIMEParser] Parsing as HTML")
             let decoded = decodeContent(body, headers: "Content-Type: \(contentType)")
             return decoded
         } else {
-            // Plain text - convert to simple HTML
-            print("[MIMEParser] Parsing as plain text")
             let decoded = decodeContent(body, headers: "Content-Type: \(contentType)")
-            print("[MIMEParser] Decoded length: \(decoded.count)")
             let wrapped = wrapPlainText(decoded)
-            print("[MIMEParser] Final HTML length: \(wrapped.count)")
             return wrapped
         }
     }
 
     private func findBoundaryInBody() -> String {
-        // Look for boundary pattern in the body: --XXXXXXX followed by newline
         let pattern = #"--([a-zA-Z0-9_=\-]+)\r?\n"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
             return ""
@@ -100,14 +295,10 @@ class MIMEParser {
         var htmlContent: String?
         var textContent: String?
 
-        print("[MIMEParser] parseMultipart: found \(parts.count) parts")
-
-        for (index, part) in parts.enumerated() {
+        for part in parts {
             let trimmed = part.trimmingCharacters(in: .whitespacesAndNewlines)
-            print("[MIMEParser] Part \(index): length=\(part.count), trimmed=\(trimmed.prefix(50))...")
             if trimmed.isEmpty || trimmed == "--" || trimmed.hasPrefix("--") { continue }
 
-            // Split headers from body - look for double newline
             var headerEnd: Range<String.Index>?
             if let range = part.range(of: "\r\n\r\n") {
                 headerEnd = range
@@ -120,7 +311,6 @@ class MIMEParser {
             let headers = String(part[..<hEnd.lowerBound])
             var content = String(part[hEnd.upperBound...])
 
-            // Remove trailing boundary marker or closing dashes if present
             content = content.trimmingCharacters(in: .whitespacesAndNewlines)
             if content.hasSuffix("--") {
                 content = String(content.dropLast(2)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -128,7 +318,6 @@ class MIMEParser {
 
             let headersLower = headers.lowercased()
 
-            // Check for nested multipart
             if headersLower.contains("multipart/") {
                 if let nestedBoundary = extractBoundary(from: headers) {
                     let nestedParser = MIMEParser(body: content, contentType: headers, boundary: nestedBoundary)
@@ -140,27 +329,19 @@ class MIMEParser {
                 }
             }
 
-            // Check content type
             if headersLower.contains("text/html") {
-                print("[MIMEParser] Found text/html part, RAW content length: \(content.count)")
-                print("[MIMEParser] RAW HTML content: \(content)")
-                print("[MIMEParser] HTML headers: \(headers)")
                 let decoded = decodeContent(content, headers: headers)
-                print("[MIMEParser] Decoded HTML length: \(decoded.count)")
                 if !decoded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     htmlContent = decoded
                 }
             } else if headersLower.contains("text/plain") {
-                print("[MIMEParser] Found text/plain part, content length: \(content.count)")
                 let decoded = decodeContent(content, headers: headers)
-                print("[MIMEParser] Decoded text length: \(decoded.count)")
                 if !decoded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     textContent = decoded
                 }
             }
         }
 
-        // Prefer HTML over plain text
         if let html = htmlContent, !html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return ensureHTMLWrapper(html)
         }
@@ -168,12 +349,10 @@ class MIMEParser {
             return wrapPlainText(text)
         }
 
-        // Last resort - try to extract any readable text
         return wrapPlainText(extractReadableText(from: body))
     }
 
     private func extractBoundary(from headers: String) -> String? {
-        // Try multiple patterns
         let patterns = [
             #"boundary="([^"]+)""#,
             #"boundary=([^\s;]+)"#
@@ -197,7 +376,6 @@ class MIMEParser {
         var result = content
         let headersLower = headers.lowercased()
 
-        // Check transfer encoding
         if headersLower.contains("quoted-printable") {
             result = decodeQuotedPrintable(result)
         } else if headersLower.contains("base64") {
@@ -209,11 +387,9 @@ class MIMEParser {
 
     private func decodeQuotedPrintable(_ string: String) -> String {
         var result = string
-        // Handle soft line breaks
         result = result.replacingOccurrences(of: "=\r\n", with: "")
         result = result.replacingOccurrences(of: "=\n", with: "")
 
-        // Decode hex sequences
         var decoded = Data()
         var i = result.startIndex
 
@@ -234,7 +410,6 @@ class MIMEParser {
             } else if let ascii = char.asciiValue {
                 decoded.append(ascii)
             } else {
-                // Non-ASCII character - encode as UTF-8
                 for byte in String(char).utf8 {
                     decoded.append(byte)
                 }
@@ -259,26 +434,22 @@ class MIMEParser {
     }
 
     private func extractReadableText(from body: String) -> String {
-        // Strip MIME headers and boundaries, extract readable content
         var lines: [String] = []
         var inContent = false
 
         for line in body.components(separatedBy: .newlines) {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
 
-            // Skip boundary lines
             if trimmed.hasPrefix("--") && trimmed.count > 20 {
                 inContent = false
                 continue
             }
 
-            // Skip MIME headers
             if trimmed.lowercased().hasPrefix("content-") ||
                trimmed.lowercased().hasPrefix("mime-") {
                 continue
             }
 
-            // Empty line after headers signals content start
             if trimmed.isEmpty && !inContent {
                 inContent = true
                 continue
@@ -333,7 +504,6 @@ class MIMEParser {
         """
     }
 
-    // For preview text
     static func createPreview(from body: String, boundary: String) -> String {
         let parser = MIMEParser(body: body, contentType: "", boundary: boundary)
 
@@ -345,7 +515,6 @@ class MIMEParser {
         var text = ""
 
         if !effectiveBoundary.isEmpty {
-            // Extract text from multipart
             let parts = body.components(separatedBy: "--" + effectiveBoundary)
             for part in parts {
                 if let headerEnd = part.range(of: "\r\n\r\n") ?? part.range(of: "\n\n") {
@@ -363,7 +532,6 @@ class MIMEParser {
             text = parser.extractReadableText(from: body)
         }
 
-        // Clean up
         text = text
             .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
             .replacingOccurrences(of: "\r\n", with: " ")
@@ -379,6 +547,8 @@ class MIMEParser {
     }
 }
 
+// MARK: - Email Manager
+
 class EmailManager: ObservableObject {
     @Published var emails: [Email] = []
     @Published var isConnected = false
@@ -386,12 +556,16 @@ class EmailManager: ObservableObject {
     @Published var errorMessage: String?
     @Published var unreadCount: Int = 0
     @Published var secondsUntilRefresh: Int = 60
+    @Published var lastFetchDuration: TimeInterval = 0
 
     private var imapConnection: IMAPConnection?
     private var refreshTimer: Timer?
     private var countdownTimer: Timer?
     private var notificationObserver: Any?
     private let refreshInterval: Int = 60
+    
+    private let cache = EmailCache.shared
+    private let connectionPool = IMAPConnectionPool.shared
 
     let account: IMAPAccount
     let folderConfig: FolderConfig
@@ -405,7 +579,7 @@ class EmailManager: ObservableObject {
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.fetchEmails()
+            self?.fetchEmails(forceFullRefresh: true)
         }
     }
 
@@ -417,8 +591,22 @@ class EmailManager: ObservableObject {
     }
 
     func startFetching() {
-        fetchEmails()
+        // Try to show cached emails immediately
+        if let cached = cache.getCachedEmails(for: cacheKey) {
+            let filtered = applyFilters(to: cached)
+            DispatchQueue.main.async {
+                self.emails = filtered
+                self.unreadCount = filtered.filter { !$0.isRead }.count
+                self.isConnected = true
+            }
+        }
+        
+        fetchEmails(forceFullRefresh: false)
         startTimers()
+    }
+    
+    private var cacheKey: String {
+        return "\(account.id):\(folderConfig.folderPath)"
     }
 
     private func startTimers() {
@@ -436,7 +624,7 @@ class EmailManager: ObservableObject {
         }
 
         refreshTimer = Timer.scheduledTimer(withTimeInterval: Double(refreshInterval), repeats: true) { [weak self] _ in
-            self?.fetchEmails()
+            self?.fetchEmails(forceFullRefresh: false)
             DispatchQueue.main.async {
                 self?.secondsUntilRefresh = self?.refreshInterval ?? 60
             }
@@ -452,10 +640,10 @@ class EmailManager: ObservableObject {
 
     func stopFetching() {
         stopTimers()
-        imapConnection?.disconnect()
+        // Don't disconnect - let connection pool manage it
     }
 
-    func fetchEmails() {
+    func fetchEmails(forceFullRefresh: Bool = false) {
         guard !account.host.isEmpty else {
             DispatchQueue.main.async {
                 self.errorMessage = "Please configure IMAP settings"
@@ -469,12 +657,14 @@ class EmailManager: ObservableObject {
         }
 
         let startTime = Date()
-        print("[EmailManager] [\(folderConfig.name)] Starting fetch at \(startTime)")
+        print("[EmailManager] [\(folderConfig.name)] Starting fetch")
+        print("[EmailManager] [\(folderConfig.name)] Folder path: \(folderConfig.folderPath)")
+        print("[EmailManager] [\(folderConfig.name)] Max emails: \(folderConfig.maxEmails), Days: \(folderConfig.daysToFetch)")
+        print("[EmailManager] [\(folderConfig.name)] Filter groups: \(folderConfig.filterGroups.count)")
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
-            // Create IMAPConfig from account
             let imapConfig = IMAPConfig(
                 host: self.account.host,
                 port: self.account.port,
@@ -483,41 +673,122 @@ class EmailManager: ObservableObject {
                 useSSL: self.account.useSSL
             )
 
-            let connection = IMAPConnection(config: imapConfig)
-            self.imapConnection = connection
-
             do {
-                print("[EmailManager] [\(self.folderConfig.name)] Connecting... \(Date().timeIntervalSince(startTime))s")
-                try connection.connect()
-                print("[EmailManager] [\(self.folderConfig.name)] Connected! \(Date().timeIntervalSince(startTime))s")
+                // Use connection pool for better performance (per-folder connections)
+                let folderPath = self.folderConfig.folderPath
+                let connection = try self.connectionPool.getConnection(for: imapConfig, folder: folderPath)
 
-                let fetchedEmails = try connection.fetchEmails(folder: self.folderConfig.folderPath, limit: 25)
-                print("[EmailManager] [\(self.folderConfig.name)] Fetched \(fetchedEmails.count) emails in \(Date().timeIntervalSince(startTime))s")
+                let highestCachedUID = forceFullRefresh ? 0 : self.cache.getHighestUID(for: self.cacheKey)
 
-                connection.disconnect()
+                print("[EmailManager] [\(self.folderConfig.name)] Connected, fetching (highestCachedUID: \(highestCachedUID))")
 
-                // Apply filters
-                let filteredEmails = fetchedEmails.filter { self.folderConfig.matchesFilters(email: $0) }
-                if filteredEmails.count < fetchedEmails.count {
-                    print("[EmailManager] [\(self.folderConfig.name)] Filtered to \(filteredEmails.count) emails (from \(fetchedEmails.count))")
+                // Get fetch settings from folder config
+                let maxEmails = self.folderConfig.maxEmails  // 0 = unlimited
+                let daysToFetch = self.folderConfig.daysToFetch  // 0 = all time
+
+                // Use delta fetch if we have cached emails
+                let fetchedEmails: [Email]
+                if highestCachedUID > 0 && !forceFullRefresh {
+                    // Fetch only new emails since last known UID
+                    fetchedEmails = try connection.fetchEmailsSince(
+                        folder: folderPath,
+                        sinceUID: highestCachedUID,
+                        limit: maxEmails > 0 ? maxEmails : 500
+                    )
+                    print("[EmailManager] [\(self.folderConfig.name)] Delta fetch: \(fetchedEmails.count) new emails")
+                } else {
+                    // Build server-side search query from filter groups
+                    let searchQuery = self.buildServerSearchQuery()
+
+                    // Full fetch with configured limits and optional server-side search
+                    fetchedEmails = try connection.fetchEmails(
+                        folder: folderPath,
+                        limit: maxEmails,
+                        daysBack: daysToFetch,
+                        searchQuery: searchQuery
+                    )
+                    print("[EmailManager] [\(self.folderConfig.name)] Full fetch: \(fetchedEmails.count) emails (max=\(maxEmails), days=\(daysToFetch), search=\(searchQuery ?? "none"))")
                 }
 
+                // Return connection to pool (keep alive)
+                self.connectionPool.returnConnection(connection, for: imapConfig, folder: folderPath)
+                
+                // Merge with cache
+                let allEmails: [Email]
+                if highestCachedUID > 0 && !forceFullRefresh {
+                    allEmails = self.cache.mergeNewEmails(fetchedEmails, for: self.cacheKey, maxEmails: maxEmails)
+                } else {
+                    allEmails = fetchedEmails.sorted { $0.date > $1.date }
+                }
+                
+                // Update cache
+                self.cache.setCachedEmails(allEmails, for: self.cacheKey)
+
+                // Apply filters
+                let filteredEmails = self.applyFilters(to: allEmails)
+                
+                let fetchDuration = Date().timeIntervalSince(startTime)
+                
                 DispatchQueue.main.async {
-                    self.emails = filteredEmails.sorted { $0.date > $1.date }
+                    self.emails = filteredEmails
                     self.unreadCount = filteredEmails.filter { !$0.isRead }.count
                     self.isConnected = true
                     self.isLoading = false
                     self.secondsUntilRefresh = self.refreshInterval
-                    print("[EmailManager] UI updated in \(Date().timeIntervalSince(startTime))s")
+                    self.lastFetchDuration = fetchDuration
+                    print("[EmailManager] [\(self.folderConfig.name)] Done in \(String(format: "%.2f", fetchDuration))s, showing \(filteredEmails.count) emails")
                 }
             } catch {
-                print("[EmailManager] Error after \(Date().timeIntervalSince(startTime))s: \(error)")
+                print("[EmailManager] Error: \(error)")
+                // Invalidate connection on error
+                self.connectionPool.invalidateConnection(for: imapConfig, folder: self.folderConfig.folderPath)
+                
                 DispatchQueue.main.async {
                     self.errorMessage = error.localizedDescription
                     self.isConnected = false
                     self.isLoading = false
                 }
             }
+        }
+    }
+    
+    private func applyFilters(to emails: [Email]) -> [Email] {
+        let filtered = emails.filter { self.folderConfig.matchesFilters(email: $0, accountEmail: self.account.emailAddress) }
+        if filtered.count < emails.count {
+            print("[EmailManager] [\(folderConfig.name)] Filtered to \(filtered.count) emails (from \(emails.count))")
+        }
+        return filtered
+    }
+    
+    /// Build IMAP SEARCH query from filter groups that have server search enabled
+    private func buildServerSearchQuery() -> String? {
+        let serverSearchGroups = folderConfig.filterGroups.filter { $0.enabled && $0.useServerSearch }
+        guard !serverSearchGroups.isEmpty else { return nil }
+        
+        var queries: [String] = []
+        for group in serverSearchGroups {
+            if let query = group.buildIMAPSearchQuery() {
+                queries.append(query)
+            }
+        }
+        
+        guard !queries.isEmpty else { return nil }
+        
+        if queries.count == 1 {
+            return queries[0]
+        }
+        
+        // Combine multiple group queries
+        if folderConfig.groupLogic == .or {
+            // OR them together
+            var result = queries[0]
+            for i in 1..<queries.count {
+                result = "OR (\(result)) (\(queries[i]))"
+            }
+            return result
+        } else {
+            // AND them together (implicit in IMAP)
+            return queries.joined(separator: " ")
         }
     }
 
@@ -528,11 +799,15 @@ class EmailManager: ObservableObject {
         if let index = self.emails.firstIndex(where: { $0.id == email.id }) {
             self.emails[index].isRead = true
             self.unreadCount = self.emails.filter { !$0.isRead }.count
+            
+            // Update cache
+            cache.updateEmail(self.emails[index], for: cacheKey)
         }
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
+            let folderPath = self.folderConfig.folderPath
             do {
                 let imapConfig = IMAPConfig(
                     host: self.account.host,
@@ -541,12 +816,10 @@ class EmailManager: ObservableObject {
                     password: self.account.password,
                     useSSL: self.account.useSSL
                 )
-                let connection = IMAPConnection(config: imapConfig)
-                try connection.connect()
-                try connection.markAsRead(folder: self.folderConfig.folderPath, uid: email.uid)
-                connection.disconnect()
+                let connection = try self.connectionPool.getConnection(for: imapConfig, folder: folderPath)
+                try connection.markAsRead(folder: folderPath, uid: email.uid)
+                self.connectionPool.returnConnection(connection, for: imapConfig, folder: folderPath)
             } catch {
-                // Revert on failure
                 DispatchQueue.main.async {
                     if let index = self.emails.firstIndex(where: { $0.id == email.id }) {
                         self.emails[index].isRead = false
@@ -561,15 +834,17 @@ class EmailManager: ObservableObject {
     func markAsUnread(_ email: Email) {
         guard !account.host.isEmpty else { return }
 
-        // Optimistic UI update
         if let index = self.emails.firstIndex(where: { $0.id == email.id }) {
             self.emails[index].isRead = false
             self.unreadCount = self.emails.filter { !$0.isRead }.count
+
+            cache.updateEmail(self.emails[index], for: cacheKey)
         }
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
+            let folderPath = self.folderConfig.folderPath
             do {
                 let imapConfig = IMAPConfig(
                     host: self.account.host,
@@ -578,12 +853,10 @@ class EmailManager: ObservableObject {
                     password: self.account.password,
                     useSSL: self.account.useSSL
                 )
-                let connection = IMAPConnection(config: imapConfig)
-                try connection.connect()
-                try connection.markAsUnread(folder: self.folderConfig.folderPath, uid: email.uid)
-                connection.disconnect()
+                let connection = try self.connectionPool.getConnection(for: imapConfig, folder: folderPath)
+                try connection.markAsUnread(folder: folderPath, uid: email.uid)
+                self.connectionPool.returnConnection(connection, for: imapConfig, folder: folderPath)
             } catch {
-                // Revert on failure
                 DispatchQueue.main.async {
                     if let index = self.emails.firstIndex(where: { $0.id == email.id }) {
                         self.emails[index].isRead = true
@@ -598,14 +871,15 @@ class EmailManager: ObservableObject {
     func deleteEmail(_ email: Email) {
         guard !account.host.isEmpty else { return }
 
-        // Optimistically remove from UI immediately
         emails.removeAll { $0.id == email.id }
         unreadCount = emails.filter { !$0.isRead }.count
 
-        // Perform actual IMAP delete in background
+        cache.removeEmail(uid: email.uid, from: cacheKey)
+
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             guard let self = self else { return }
 
+            let folderPath = self.folderConfig.folderPath
             do {
                 let imapConfig = IMAPConfig(
                     host: self.account.host,
@@ -614,13 +888,11 @@ class EmailManager: ObservableObject {
                     password: self.account.password,
                     useSSL: self.account.useSSL
                 )
-                let connection = IMAPConnection(config: imapConfig)
-                try connection.connect()
-                try connection.deleteEmail(folder: self.folderConfig.folderPath, uid: email.uid)
-                connection.disconnect()
+                let connection = try self.connectionPool.getConnection(for: imapConfig, folder: folderPath)
+                try connection.deleteEmail(folder: folderPath, uid: email.uid)
+                self.connectionPool.returnConnection(connection, for: imapConfig, folder: folderPath)
             } catch {
                 DispatchQueue.main.async {
-                    // On error, add it back and show error
                     self.emails.append(email)
                     self.emails.sort { $0.date > $1.date }
                     self.unreadCount = self.emails.filter { !$0.isRead }.count
@@ -631,7 +903,7 @@ class EmailManager: ObservableObject {
     }
 
     func refresh() {
-        fetchEmails()
+        fetchEmails(forceFullRefresh: true)
     }
 
     func fetchFullBody(for email: Email, completion: @escaping (String) -> Void) {
@@ -641,6 +913,7 @@ class EmailManager: ObservableObject {
         }
 
         DispatchQueue.global(qos: .userInitiated).async {
+            let folderPath = self.folderConfig.folderPath
             do {
                 let imapConfig = IMAPConfig(
                     host: self.account.host,
@@ -649,13 +922,10 @@ class EmailManager: ObservableObject {
                     password: self.account.password,
                     useSSL: self.account.useSSL
                 )
-                let connection = IMAPConnection(config: imapConfig)
-                try connection.connect()
-                let fullMessage = try connection.fetchFullMessage(folder: self.folderConfig.folderPath, uid: email.uid)
-                connection.disconnect()
+                let connection = try self.connectionPool.getConnection(for: imapConfig, folder: folderPath)
+                let fullMessage = try connection.fetchFullMessage(folder: folderPath, uid: email.uid)
+                self.connectionPool.returnConnection(connection, for: imapConfig, folder: folderPath)
 
-                // Parse the full message to extract body
-                // The full message includes headers + body
                 var body = fullMessage
                 if let headerEnd = fullMessage.range(of: "\r\n\r\n") {
                     body = String(fullMessage[headerEnd.upperBound...])
