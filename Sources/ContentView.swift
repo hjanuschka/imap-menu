@@ -123,6 +123,13 @@ struct ContentView: View {
                 Text(emailManager.isConnected ? "Connected" : "Disconnected")
                     .font(.caption)
                     .foregroundColor(.secondary)
+                
+                if let lastSync = emailManager.lastSyncTime {
+                    Text("• \(lastSyncFormatted(lastSync))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                
                 Spacer()
                 Button("Quit") {
                     NSApplication.shared.terminate(nil)
@@ -139,6 +146,19 @@ struct ContentView: View {
         .background(Color.white)
         .sheet(isPresented: $showingSettings) {
             SettingsView()
+        }
+    }
+    
+    private func lastSyncFormatted(_ date: Date) -> String {
+        let seconds = Int(Date().timeIntervalSince(date))
+        if seconds < 60 {
+            return "synced \(seconds)s ago"
+        } else if seconds < 3600 {
+            return "synced \(seconds / 60)m ago"
+        } else {
+            let formatter = DateFormatter()
+            formatter.timeStyle = .short
+            return "synced at \(formatter.string(from: date))"
         }
     }
 }

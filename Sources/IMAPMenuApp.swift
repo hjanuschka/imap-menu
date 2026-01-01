@@ -205,7 +205,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 }
 extension NSImage {
     func image(tintedWith color: NSColor) -> NSImage {
-        guard let cgImage = self.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+        guard self.cgImage(forProposedRect: nil, context: nil, hints: nil) != nil else {
             return self
         }
 

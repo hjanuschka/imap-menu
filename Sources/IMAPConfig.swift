@@ -216,7 +216,7 @@ struct FilterGroup: Codable, Identifiable, Equatable, Hashable {
         // Exclude filters always use AND logic (if ANY exclude matches, reject)
         for filter in excludeFilters {
             if filter.matches(email: email) {
-                print("[Group:\(name)] EXCLUDED by '\(filter.field.rawValue) \(filter.matchType.rawValue) \(filter.pattern)' - from:\(email.from.prefix(30)), fromName:\(email.fromName.prefix(30))")
+                debugLog("[Group:\(name)] EXCLUDED by '\(filter.field.rawValue) \(filter.matchType.rawValue) \(filter.pattern)' - from:\(email.from.prefix(30)), fromName:\(email.fromName.prefix(30))")
                 return false
             }
         }
@@ -231,14 +231,14 @@ struct FilterGroup: Codable, Identifiable, Equatable, Hashable {
             // ALL include filters must match
             let result = includeFilters.allSatisfy { $0.matches(email: email) }
             if !result {
-                print("[Group:\(name)] NOT MATCHED (AND) - subject:\(email.subject.prefix(40))")
+                debugLog("[Group:\(name)] NOT MATCHED (AND) - subject:\(email.subject.prefix(40))")
             }
             return result
         } else {
             // ANY include filter must match
             let result = includeFilters.contains { $0.matches(email: email) }
             if !result {
-                print("[Group:\(name)] NOT MATCHED (OR) - subject:\(email.subject.prefix(40)), from:\(email.from.prefix(30))")
+                debugLog("[Group:\(name)] NOT MATCHED (OR) - subject:\(email.subject.prefix(40)), from:\(email.from.prefix(30))")
             }
             return result
         }
