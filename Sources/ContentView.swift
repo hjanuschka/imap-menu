@@ -399,16 +399,6 @@ struct EmailDetailView: View {
                 .tint(.red)
 
                 Spacer()
-                
-                // Open in Mail.app
-                Button(action: {
-                    openInMailApp()
-                }) {
-                    Label("Open in Mail", systemImage: "envelope.arrow.triangle.branch")
-                        .font(.caption)
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -514,24 +504,6 @@ struct EmailDetailView: View {
             debugLog("[Compose] Email sent successfully")
         }
         composeWindowController = controller
-    }
-    
-    private func openInMailApp() {
-        // Create a mailto: URL that Mail.app can open
-        // This opens a new compose window with the email details pre-filled
-        // Unfortunately, there's no standard way to open a specific email in Mail.app
-        // So we create a "reply" style mailto link
-        var components = URLComponents()
-        components.scheme = "mailto"
-        components.path = currentEmail.fromEmail
-        
-        var queryItems: [URLQueryItem] = []
-        queryItems.append(URLQueryItem(name: "subject", value: "Re: \(currentEmail.subject)"))
-        components.queryItems = queryItems
-        
-        if let url = components.url {
-            NSWorkspace.shared.open(url)
-        }
     }
 }
 

@@ -216,7 +216,7 @@ struct ComposeView: View {
                     password: account.effectiveSmtpPassword,
                     useSSL: account.smtpUseSSL,
                     fromEmail: account.emailAddress,
-                    fromName: account.name
+                    fromName: account.displayName
                 )
 
                 let connection = SMTPConnection(config: config)

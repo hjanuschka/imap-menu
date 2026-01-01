@@ -465,9 +465,11 @@ struct IMAPAccount: Codable, Identifiable, Equatable, Hashable {
     var smtpUseSSL: Bool
     var smtpUsername: String  // If empty, uses IMAP username
     var smtpPassword: String  // If empty, uses IMAP password
+    var fromEmail: String     // Email address shown in From field (if empty, uses username)
+    var fromName: String      // Display name shown in From field (if empty, uses account name)
     var signature: String     // Text signature appended to outgoing emails
 
-    init(id: UUID = UUID(), name: String, host: String, port: Int = 993, username: String, password: String = "", useSSL: Bool = true, folders: [FolderConfig] = [], smtpHost: String = "", smtpPort: Int = 587, smtpUseSSL: Bool = true, smtpUsername: String = "", smtpPassword: String = "", signature: String = "") {
+    init(id: UUID = UUID(), name: String, host: String, port: Int = 993, username: String, password: String = "", useSSL: Bool = true, folders: [FolderConfig] = [], smtpHost: String = "", smtpPort: Int = 587, smtpUseSSL: Bool = true, smtpUsername: String = "", smtpPassword: String = "", fromEmail: String = "", fromName: String = "", signature: String = "") {
         self.id = id
         self.name = name
         self.host = host
@@ -481,6 +483,8 @@ struct IMAPAccount: Codable, Identifiable, Equatable, Hashable {
         self.smtpUseSSL = smtpUseSSL
         self.smtpUsername = smtpUsername
         self.smtpPassword = smtpPassword
+        self.fromEmail = fromEmail
+        self.fromName = fromName
         self.signature = signature
     }
 
@@ -503,14 +507,28 @@ struct IMAPAccount: Codable, Identifiable, Equatable, Hashable {
         smtpUseSSL = try container.decodeIfPresent(Bool.self, forKey: .smtpUseSSL) ?? true
         smtpUsername = try container.decodeIfPresent(String.self, forKey: .smtpUsername) ?? ""
         smtpPassword = try container.decodeIfPresent(String.self, forKey: .smtpPassword) ?? ""
+        fromEmail = try container.decodeIfPresent(String.self, forKey: .fromEmail) ?? ""
+        fromName = try container.decodeIfPresent(String.self, forKey: .fromName) ?? ""
         signature = try container.decodeIfPresent(String.self, forKey: .signature) ?? ""
     }
 
+    /// The email address used for sending (From field)
     var emailAddress: String {
+        if !fromEmail.isEmpty {
+            return fromEmail
+        }
         if username.contains("@") {
             return username
         }
         return username
+    }
+    
+    /// The display name used for sending (From field)
+    var displayName: String {
+        if !fromName.isEmpty {
+            return fromName
+        }
+        return name
     }
 
     var effectiveSmtpUsername: String {

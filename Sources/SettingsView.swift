@@ -220,6 +220,30 @@ struct AccountDetailView: View {
                                     .foregroundColor(.secondary)
                             }
                         }
+                        
+                        Divider()
+                        
+                        Text("From Address (for outgoing emails)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        HStack {
+                            TextField("From Email", text: $account.fromEmail)
+                            if account.fromEmail.isEmpty {
+                                Text("Uses '\(account.username)'")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        
+                        HStack {
+                            TextField("From Name", text: $account.fromName)
+                            if account.fromName.isEmpty {
+                                Text("Uses '\(account.name)'")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
 
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Email Signature:")
@@ -375,7 +399,7 @@ struct AccountDetailView: View {
                     password: account.effectiveSmtpPassword,
                     useSSL: account.smtpUseSSL,
                     fromEmail: account.emailAddress,
-                    fromName: account.name
+                    fromName: account.displayName
                 )
                 let connection = SMTPConnection(config: config)
                 try connection.connect()
