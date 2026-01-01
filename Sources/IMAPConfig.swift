@@ -271,8 +271,15 @@ struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
     var name: String
     var folderPath: String
     var enabled: Bool
-    var icon: String
+    var icon: String          // SF Symbol name OR URL to image OR local file path
     var iconColor: String
+    var iconType: IconType    // .sfSymbol, .url, or .file
+    
+    enum IconType: String, Codable, CaseIterable {
+        case sfSymbol = "sfSymbol"
+        case url = "url"
+        case file = "file"
+    }
     var popoverWidth: PopoverWidth
     
     // Legacy simple filters (kept for backward compatibility)
@@ -297,13 +304,14 @@ struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
     var maxEmails: Int
     var daysToFetch: Int
 
-    init(id: UUID = UUID(), name: String, folderPath: String, enabled: Bool = true, icon: String = "envelope", iconColor: String = "", filterSender: String = "", filterSubject: String = "", popoverWidth: PopoverWidth = .medium, filters: [EmailFilter] = [], filterLogic: FilterLogic = .and, filterGroups: [FilterGroup] = [], groupLogic: FilterLogic = .and, excludeOwnEmails: Bool = false, lastSeenUID: UInt32 = 0, cachedEmailCount: Int = 0, maxEmails: Int = 100, daysToFetch: Int = 0) {
+    init(id: UUID = UUID(), name: String, folderPath: String, enabled: Bool = true, icon: String = "envelope", iconColor: String = "", iconType: IconType = .sfSymbol, filterSender: String = "", filterSubject: String = "", popoverWidth: PopoverWidth = .medium, filters: [EmailFilter] = [], filterLogic: FilterLogic = .and, filterGroups: [FilterGroup] = [], groupLogic: FilterLogic = .and, excludeOwnEmails: Bool = false, lastSeenUID: UInt32 = 0, cachedEmailCount: Int = 0, maxEmails: Int = 100, daysToFetch: Int = 0) {
         self.id = id
         self.name = name
         self.folderPath = folderPath
         self.enabled = enabled
         self.icon = icon
         self.iconColor = iconColor
+        self.iconType = iconType
         self.filterSender = filterSender
         self.filterSubject = filterSubject
         self.popoverWidth = popoverWidth
@@ -331,6 +339,7 @@ struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
         
         // Optional fields from original config (with defaults)
         iconColor = try container.decodeIfPresent(String.self, forKey: .iconColor) ?? ""
+        iconType = try container.decodeIfPresent(IconType.self, forKey: .iconType) ?? .sfSymbol
         filterSender = try container.decodeIfPresent(String.self, forKey: .filterSender) ?? ""
         filterSubject = try container.decodeIfPresent(String.self, forKey: .filterSubject) ?? ""
         popoverWidth = try container.decodeIfPresent(PopoverWidth.self, forKey: .popoverWidth) ?? .medium

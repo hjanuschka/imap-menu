@@ -799,6 +799,31 @@ struct FolderRowView: View {
         }
         return Color(nsColor: NSColor(hex: folder.iconColor) ?? .gray)
     }
+    
+    @ViewBuilder
+    private var iconPreview: some View {
+        switch folder.iconType {
+        case .sfSymbol:
+            Image(systemName: folder.icon)
+                .foregroundColor(iconColor)
+        case .url:
+            AsyncImage(url: URL(string: folder.icon)) { image in
+                image.resizable().aspectRatio(contentMode: .fit)
+            } placeholder: {
+                Image(systemName: "photo")
+                    .foregroundColor(.secondary)
+            }
+        case .file:
+            if let nsImage = NSImage(contentsOfFile: NSString(string: folder.icon).expandingTildeInPath) {
+                Image(nsImage: nsImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                Image(systemName: "doc")
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
 
     var body: some View {
         HStack {
@@ -806,13 +831,12 @@ struct FolderRowView: View {
                 HStack(spacing: 8) {
                     // Icon picker button
                     Button(action: { showingIconPicker = true }) {
-                        Image(systemName: folder.icon)
+                        iconPreview
                             .frame(width: 20, height: 20)
-                            .foregroundColor(iconColor)
                     }
                     .buttonStyle(.plain)
                     .popover(isPresented: $showingIconPicker) {
-                        IconPickerView(selectedIcon: $folder.icon)
+                        IconPickerView(selectedIcon: $folder.icon, iconType: $folder.iconType)
                     }
 
                     // Color picker button
@@ -920,8 +944,12 @@ struct ColorPickerView: View {
 
 struct IconPickerView: View {
     @Binding var selectedIcon: String
+    @Binding var iconType: FolderConfig.IconType
     @Environment(\.dismiss) var dismiss
     @State private var searchText = ""
+    @State private var customURL = ""
+    @State private var customFilePath = ""
+    @State private var selectedTab = 0
 
     let allIconsList: [String] = {
         var icons: [String] = []
@@ -1012,15 +1040,49 @@ struct IconPickerView: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            HStack {
-                Text("Choose Icon")
-                    .font(.headline)
-                Spacer()
-                Text("\(filteredIcons.count) icons")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+            Text("Choose Icon")
+                .font(.headline)
+            
+            // Tab selector
+            Picker("Icon Type", selection: $selectedTab) {
+                Text("SF Symbols").tag(0)
+                Text("Image URL").tag(1)
+                Text("Local File").tag(2)
             }
-
+            .pickerStyle(.segmented)
+            .onChange(of: selectedTab) { newTab in
+                switch newTab {
+                case 0: iconType = .sfSymbol
+                case 1: iconType = .url
+                case 2: iconType = .file
+                default: break
+                }
+            }
+            .onAppear {
+                selectedTab = iconType == .sfSymbol ? 0 : (iconType == .url ? 1 : 2)
+                customURL = iconType == .url ? selectedIcon : ""
+                customFilePath = iconType == .file ? selectedIcon : ""
+            }
+            
+            // Tab content
+            switch selectedTab {
+            case 0:
+                sfSymbolPicker
+            case 1:
+                urlPicker
+            case 2:
+                filePicker
+            default:
+                EmptyView()
+            }
+        }
+        .padding()
+        .frame(width: 550, height: 550)
+    }
+    
+    // SF Symbol picker
+    private var sfSymbolPicker: some View {
+        VStack(spacing: 12) {
             HStack {
                 Image(systemName: "magnifyingglass")
                     .foregroundColor(.secondary)
@@ -1033,6 +1095,10 @@ struct IconPickerView: View {
                     }
                     .buttonStyle(.plain)
                 }
+                
+                Text("\(filteredIcons.count)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
             .padding(8)
             .background(Color(NSColor.textBackgroundColor))
@@ -1043,13 +1109,14 @@ struct IconPickerView: View {
                     ForEach(filteredIcons, id: \.self) { icon in
                         Button(action: {
                             selectedIcon = icon
+                            iconType = .sfSymbol
                             dismiss()
                         }) {
                             VStack(spacing: 2) {
                                 Image(systemName: icon)
                                     .font(.title3)
                                     .frame(width: 44, height: 44)
-                                    .background(selectedIcon == icon ? Color.accentColor.opacity(0.2) : Color.clear)
+                                    .background(selectedIcon == icon && iconType == .sfSymbol ? Color.accentColor.opacity(0.2) : Color.clear)
                                     .cornerRadius(8)
                                 Text(icon.replacingOccurrences(of: ".", with: "\n"))
                                     .font(.system(size: 7))
@@ -1066,20 +1133,149 @@ struct IconPickerView: View {
                 .padding(.horizontal)
             }
 
-            Divider()
-
             HStack {
                 Text("Custom:")
                     .foregroundColor(.secondary)
                 TextField("SF Symbol name", text: $selectedIcon)
                     .textFieldStyle(.roundedBorder)
-                Button("Done") {
+                Button("Apply") {
+                    iconType = .sfSymbol
                     dismiss()
                 }
             }
         }
-        .padding()
-        .frame(width: 550, height: 550)
+    }
+    
+    // URL picker
+    private var urlPicker: some View {
+        VStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Enter an image URL:")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                TextField("https://example.com/icon.png", text: $customURL)
+                    .textFieldStyle(.roundedBorder)
+                
+                Text("Supports PNG, JPG, SVG, and other web image formats.")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            
+            // Preview
+            if let url = URL(string: customURL), !customURL.isEmpty {
+                VStack {
+                    Text("Preview:")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    AsyncImage(url: url) { image in
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 64, height: 64)
+                    } placeholder: {
+                        ProgressView()
+                            .frame(width: 64, height: 64)
+                    }
+                }
+                .padding()
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(8)
+            }
+            
+            Spacer()
+            
+            HStack {
+                Button("Cancel") {
+                    dismiss()
+                }
+                Spacer()
+                Button("Apply") {
+                    selectedIcon = customURL
+                    iconType = .url
+                    dismiss()
+                }
+                .disabled(customURL.isEmpty)
+            }
+        }
+        .padding(.top, 8)
+    }
+    
+    // File picker
+    private var filePicker: some View {
+        VStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Select a local image file:")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                HStack {
+                    TextField("~/Pictures/icon.png", text: $customFilePath)
+                        .textFieldStyle(.roundedBorder)
+                    
+                    Button("Browse...") {
+                        let panel = NSOpenPanel()
+                        panel.allowedContentTypes = [.png, .jpeg, .gif, .svg, .image]
+                        panel.allowsMultipleSelection = false
+                        panel.canChooseDirectories = false
+                        
+                        if panel.runModal() == .OK, let url = panel.url {
+                            customFilePath = url.path
+                        }
+                    }
+                }
+                
+                Text("The file will be loaded from this path each time the app starts.")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            
+            // Preview
+            if !customFilePath.isEmpty {
+                VStack {
+                    Text("Preview:")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    if let image = NSImage(contentsOfFile: NSString(string: customFilePath).expandingTildeInPath) {
+                        Image(nsImage: image)
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .frame(width: 64, height: 64)
+                    } else {
+                        VStack {
+                            Image(systemName: "exclamationmark.triangle")
+                                .font(.title)
+                                .foregroundColor(.orange)
+                            Text("File not found")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(width: 64, height: 64)
+                    }
+                }
+                .padding()
+                .background(Color(NSColor.controlBackgroundColor))
+                .cornerRadius(8)
+            }
+            
+            Spacer()
+            
+            HStack {
+                Button("Cancel") {
+                    dismiss()
+                }
+                Spacer()
+                Button("Apply") {
+                    selectedIcon = customFilePath
+                    iconType = .file
+                    dismiss()
+                }
+                .disabled(customFilePath.isEmpty)
+            }
+        }
+        .padding(.top, 8)
     }
 }
 

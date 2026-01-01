@@ -84,30 +84,19 @@ class FolderMenuItem {
     func updateMenuBarIcon(unreadCount: Int, folderName: String) {
         guard let button = statusItem.button else { return }
 
-        // Get custom icon from folder config
-        let iconName = emailManager.folderConfig.icon
-        let filledIconName = iconName.contains(".fill") ? iconName : "\(iconName).fill"
-        let iconColor = emailManager.folderConfig.nsColor
+        // Get icon configuration
+        let folderConfig = emailManager.folderConfig
+        let iconColor = folderConfig.nsColor
 
-        // Debug: log icon changes
-        if button.toolTip != folderName || (button.image == nil && unreadCount == 0) {
-            print("📊 [\(folderName)] updateMenuBarIcon: icon='\(iconName)', unread=\(unreadCount), iconExists=\(NSImage(systemSymbolName: iconName, accessibilityDescription: nil) != nil)")
-        }
-
-        // Determine which icon to use
-        let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
-        let baseIconName = unreadCount > 0 ? filledIconName : iconName
-        let iconImage = NSImage(systemSymbolName: baseIconName, accessibilityDescription: folderName)
-            ?? NSImage(systemSymbolName: iconName, accessibilityDescription: folderName)
-            ?? NSImage(systemSymbolName: "envelope", accessibilityDescription: folderName)
-
-        // Apply color to icon
-        let coloredIcon = iconImage?.withSymbolConfiguration(config)
+        // Get or create the icon based on type
+        let iconImage: NSImage? = getMenuBarIcon(for: folderConfig, hasUnread: unreadCount > 0)
+        
+        // Apply color if specified
         let finalImage: NSImage?
-        if !emailManager.folderConfig.iconColor.isEmpty {
-            finalImage = coloredIcon?.image(tintedWith: iconColor)
+        if !folderConfig.iconColor.isEmpty, let image = iconImage {
+            finalImage = image.image(tintedWith: iconColor)
         } else {
-            finalImage = coloredIcon
+            finalImage = iconImage
         }
 
         // Create icon attachment
@@ -137,6 +126,95 @@ class FolderMenuItem {
 
         // Update tooltip
         button.toolTip = folderName
+    }
+    
+    // Cache for downloaded images
+    private static var imageCache: [String: NSImage] = [:]
+    
+    private func getMenuBarIcon(for folderConfig: FolderConfig, hasUnread: Bool) -> NSImage? {
+        let iconSize = NSSize(width: 18, height: 18)
+        
+        switch folderConfig.iconType {
+        case .sfSymbol:
+            // SF Symbol (current behavior)
+            let iconName = folderConfig.icon
+            let filledIconName = iconName.contains(".fill") ? iconName : "\(iconName).fill"
+            let config = NSImage.SymbolConfiguration(pointSize: 14, weight: .regular)
+            let baseIconName = hasUnread ? filledIconName : iconName
+            
+            let image = NSImage(systemSymbolName: baseIconName, accessibilityDescription: folderConfig.name)
+                ?? NSImage(systemSymbolName: iconName, accessibilityDescription: folderConfig.name)
+                ?? NSImage(systemSymbolName: "envelope", accessibilityDescription: folderConfig.name)
+            
+            return image?.withSymbolConfiguration(config)
+            
+        case .url:
+            // URL to image (download and cache)
+            let urlString = folderConfig.icon
+            
+            // Check cache first
+            if let cached = FolderMenuItem.imageCache[urlString] {
+                return resizeImageForMenuBar(cached, size: iconSize)
+            }
+            
+            // Download asynchronously
+            if let url = URL(string: urlString) {
+                downloadImage(from: url) { image in
+                    if let image = image {
+                        FolderMenuItem.imageCache[urlString] = image
+                        // Trigger UI update
+                        DispatchQueue.main.async {
+                            self.updateMenuBarIcon(unreadCount: self.emailManager.unreadCount, folderName: folderConfig.name)
+                        }
+                    }
+                }
+            }
+            
+            // Return fallback while downloading
+            return NSImage(systemSymbolName: "envelope", accessibilityDescription: folderConfig.name)
+            
+        case .file:
+            // Local file path
+            let filePath = folderConfig.icon
+            
+            // Check cache first
+            if let cached = FolderMenuItem.imageCache[filePath] {
+                return resizeImageForMenuBar(cached, size: iconSize)
+            }
+            
+            // Expand ~ and load file
+            let expandedPath = NSString(string: filePath).expandingTildeInPath
+            if let image = NSImage(contentsOfFile: expandedPath) {
+                FolderMenuItem.imageCache[filePath] = image
+                return resizeImageForMenuBar(image, size: iconSize)
+            }
+            
+            // Return fallback if file not found
+            return NSImage(systemSymbolName: "envelope", accessibilityDescription: folderConfig.name)
+        }
+    }
+    
+    private func downloadImage(from url: URL, completion: @escaping (NSImage?) -> Void) {
+        URLSession.shared.dataTask(with: url) { data, response, error in
+            guard let data = data, error == nil, let image = NSImage(data: data) else {
+                DispatchQueue.main.async { completion(nil) }
+                return
+            }
+            DispatchQueue.main.async { completion(image) }
+        }.resume()
+    }
+    
+    private func resizeImageForMenuBar(_ image: NSImage, size: NSSize) -> NSImage {
+        let resized = NSImage(size: size)
+        resized.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        image.draw(in: NSRect(origin: .zero, size: size),
+                   from: NSRect(origin: .zero, size: image.size),
+                   operation: .copy,
+                   fraction: 1.0)
+        resized.unlockFocus()
+        resized.isTemplate = true  // Allow system to color it appropriately
+        return resized
     }
 
     @objc func togglePopover(_ sender: AnyObject?) {
