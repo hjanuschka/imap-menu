@@ -214,6 +214,8 @@ class EmailCache {
                let index = emails.firstIndex(where: { $0.id == email.id }) {
                 emails[index] = email
                 self.cache[folderPath] = emails
+                // Persist the change to disk
+                self.saveToDisk(folderPath: folderPath)
             }
         }
     }
@@ -221,6 +223,8 @@ class EmailCache {
     func removeEmail(uid: UInt32, from folderPath: String) {
         cacheQueue.async(flags: .barrier) {
             self.cache[folderPath]?.removeAll { $0.uid == uid }
+            // Persist the change to disk
+            self.saveToDisk(folderPath: folderPath)
         }
     }
     
@@ -1221,8 +1225,13 @@ class EmailManager: ObservableObject {
     }
 
     func markAsRead(_ email: Email) {
-        guard !account.host.isEmpty else { return }
+        guard !account.host.isEmpty else { 
+            print("⚠️ markAsRead: host is empty, returning")
+            return 
+        }
 
+        print("📧 [EmailManager] [\(folderConfig.name)] markAsRead: uid=\(email.uid)")
+        
         // Optimistic UI update
         if let index = self.emails.firstIndex(where: { $0.id == email.id }) {
             self.emails[index].isRead = true
@@ -1233,8 +1242,12 @@ class EmailManager: ObservableObject {
         }
 
         fetchQueue.async { [weak self] in
-            guard let self = self else { return }
+            guard let self = self else { 
+                print("⚠️ markAsRead: self is nil")
+                return 
+            }
 
+            print("📧 [EmailManager] markAsRead: entering fetchQueue async")
             let folderPath = self.folderConfig.folderPath
             do {
                 let imapConfig = IMAPConfig(
@@ -1244,9 +1257,13 @@ class EmailManager: ObservableObject {
                     password: self.account.password,
                     useSSL: self.account.useSSL
                 )
+                print("📧 [EmailManager] markAsRead: getting connection...")
                 let connection = try self.getOrCreateConnection(config: imapConfig)
+                print("📧 [EmailManager] markAsRead: calling IMAP markAsRead...")
                 try connection.markAsRead(folder: folderPath, uid: email.uid)
+                print("✅ [EmailManager] [\(self.folderConfig.name)] markAsRead SUCCESS: uid=\(email.uid)")
             } catch {
+                print("❌ [EmailManager] [\(self.folderConfig.name)] markAsRead FAILED: uid=\(email.uid), error=\(error)")
                 DispatchQueue.main.async {
                     if let index = self.emails.firstIndex(where: { $0.id == email.id }) {
                         self.emails[index].isRead = false
@@ -1261,6 +1278,8 @@ class EmailManager: ObservableObject {
     func markAsUnread(_ email: Email) {
         guard !account.host.isEmpty else { return }
 
+        print("📧 [EmailManager] [\(folderConfig.name)] markAsUnread: uid=\(email.uid)")
+        
         if let index = self.emails.firstIndex(where: { $0.id == email.id }) {
             self.emails[index].isRead = false
             self.unreadCount = self.emails.filter { !$0.isRead }.count
@@ -1282,7 +1301,9 @@ class EmailManager: ObservableObject {
                 )
                 let connection = try self.getOrCreateConnection(config: imapConfig)
                 try connection.markAsUnread(folder: folderPath, uid: email.uid)
+                print("✅ [EmailManager] [\(self.folderConfig.name)] markAsUnread SUCCESS: uid=\(email.uid)")
             } catch {
+                print("❌ [EmailManager] [\(self.folderConfig.name)] markAsUnread FAILED: uid=\(email.uid), error=\(error)")
                 DispatchQueue.main.async {
                     if let index = self.emails.firstIndex(where: { $0.id == email.id }) {
                         self.emails[index].isRead = true
@@ -1297,6 +1318,8 @@ class EmailManager: ObservableObject {
     func deleteEmail(_ email: Email) {
         guard !account.host.isEmpty else { return }
 
+        print("🗑️ [EmailManager] [\(folderConfig.name)] deleteEmail: uid=\(email.uid)")
+        
         emails.removeAll { $0.id == email.id }
         unreadCount = emails.filter { !$0.isRead }.count
 
@@ -1316,7 +1339,9 @@ class EmailManager: ObservableObject {
                 )
                 let connection = try self.getOrCreateConnection(config: imapConfig)
                 try connection.deleteEmail(folder: folderPath, uid: email.uid)
+                print("✅ [EmailManager] [\(self.folderConfig.name)] deleteEmail SUCCESS: uid=\(email.uid)")
             } catch {
+                print("❌ [EmailManager] [\(self.folderConfig.name)] deleteEmail FAILED: uid=\(email.uid), error=\(error)")
                 DispatchQueue.main.async {
                     self.emails.append(email)
                     self.emails.sort { $0.date > $1.date }

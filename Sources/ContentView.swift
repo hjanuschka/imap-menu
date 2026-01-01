@@ -265,28 +265,35 @@ struct EmailRowView: View {
 
                 // Action buttons (always visible)
                 HStack(spacing: 4) {
-                    Button(action: {
-                        if email.isRead {
-                            emailManager.markAsUnread(email)
-                        } else {
-                            emailManager.markAsRead(email)
+                    Button {
+                        // Get current state from manager (not stale loop variable)
+                        guard let currentEmail = emailManager.emails.first(where: { $0.uid == email.uid }) else {
+                            print("⚠️ [LIST] Email not found in manager: uid=\(email.uid)")
+                            return
                         }
-                    }) {
+                        print("🔘 [LIST] Toggle read clicked: uid=\(currentEmail.uid), isRead=\(currentEmail.isRead)")
+                        if currentEmail.isRead {
+                            emailManager.markAsUnread(currentEmail)
+                        } else {
+                            emailManager.markAsRead(currentEmail)
+                        }
+                    } label: {
                         Image(systemName: email.isRead ? "envelope.badge" : "envelope.open")
                             .font(.system(size: 11))
                             .foregroundColor(email.isRead ? .orange : .blue)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.borderless)
                     .help(email.isRead ? "Mark as Unread" : "Mark as Read")
 
-                    Button(action: {
+                    Button {
+                        print("🗑️ [LIST] Delete clicked: uid=\(email.uid)")
                         emailManager.deleteEmail(email)
-                    }) {
+                    } label: {
                         Image(systemName: "trash")
                             .font(.system(size: 11))
                             .foregroundColor(.red)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.borderless)
                     .help("Delete")
                 }
                 .padding(.top, 4)
@@ -386,6 +393,7 @@ struct EmailDetailView: View {
                     markAsReadTimer?.invalidate()
                     markAsReadTimer = nil
 
+                    print("🔘 Toggle read button clicked: uid=\(currentEmail.uid), isRead=\(currentEmail.isRead)")
                     if currentEmail.isRead {
                         emailManager.markAsUnread(currentEmail)
                     } else {
@@ -400,6 +408,7 @@ struct EmailDetailView: View {
                 .controlSize(.small)
 
                 Button(action: {
+                    print("🗑️ Delete button clicked: uid=\(currentEmail.uid)")
                     showDeleteConfirm = true
                 }) {
                     Label("Delete", systemImage: "trash")
