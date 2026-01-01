@@ -505,7 +505,10 @@ class EmailManager: ObservableObject {
     private var refreshTimer: Timer?
     private var countdownTimer: Timer?
     // Removed: private var notificationObserver - notifications now handled by AppDelegate only
-    private let refreshInterval: Int = 60
+    private let baseRefreshInterval: Int = 60
+    private var currentRefreshInterval: Int = 60
+    private var consecutiveNoNewEmails: Int = 0
+    private var lastEmailCount: Int = 0
 
     private let cache = EmailCache.shared
 
@@ -589,10 +592,16 @@ class EmailManager: ObservableObject {
 
     private var keepAliveTimer: Timer?
     
+    /// Computed property for adaptive refresh interval
+    private var refreshInterval: Int {
+        return currentRefreshInterval
+    }
+    
     private func startTimers() {
         stopTimers()
-
-        secondsUntilRefresh = refreshInterval
+        
+        currentRefreshInterval = baseRefreshInterval
+        secondsUntilRefresh = currentRefreshInterval
 
         countdownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self = self else { return }
@@ -603,17 +612,50 @@ class EmailManager: ObservableObject {
             }
         }
 
-        refreshTimer = Timer.scheduledTimer(withTimeInterval: Double(refreshInterval), repeats: true) { [weak self] _ in
-            self?.fetchEmails(forceFullRefresh: false)
-            DispatchQueue.main.async {
-                self?.secondsUntilRefresh = self?.refreshInterval ?? 60
-            }
-        }
+        scheduleNextRefresh()
         
         // Keep-alive: send NOOP every 4 minutes to prevent connection timeout
         keepAliveTimer = Timer.scheduledTimer(withTimeInterval: 240, repeats: true) { [weak self] _ in
             self?.sendKeepAlive()
         }
+    }
+    
+    private func scheduleNextRefresh() {
+        refreshTimer?.invalidate()
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: Double(currentRefreshInterval), repeats: false) { [weak self] _ in
+            self?.fetchEmails(forceFullRefresh: false)
+        }
+    }
+    
+    /// Update refresh interval based on email activity
+    private func updateAdaptiveRefreshInterval(newEmailCount: Int) {
+        let currentCount = emails.count
+        
+        if currentCount == lastEmailCount {
+            // No new emails
+            consecutiveNoNewEmails += 1
+            
+            // Gradually increase interval: 60s -> 90s -> 120s -> 180s (max 3 min)
+            if consecutiveNoNewEmails >= 3 {
+                currentRefreshInterval = min(180, baseRefreshInterval + (consecutiveNoNewEmails - 2) * 30)
+                debugLog("[EmailManager] [\(folderConfig.name)] No new emails, slowing to \(currentRefreshInterval)s")
+            }
+        } else {
+            // New emails arrived - reset to base interval
+            consecutiveNoNewEmails = 0
+            if currentRefreshInterval != baseRefreshInterval {
+                currentRefreshInterval = baseRefreshInterval
+                debugLog("[EmailManager] [\(folderConfig.name)] New emails, resetting to \(baseRefreshInterval)s")
+            }
+        }
+        
+        lastEmailCount = currentCount
+        
+        DispatchQueue.main.async {
+            self.secondsUntilRefresh = self.currentRefreshInterval
+        }
+        
+        scheduleNextRefresh()
     }
     
     private func sendKeepAlive() {
@@ -850,6 +892,17 @@ class EmailManager: ObservableObject {
                     self.secondsUntilRefresh = self.refreshInterval
                     self.lastFetchDuration = fetchDuration
                     self.lastSyncTime = Date()
+                    
+                    // Notify about new unread emails
+                    NotificationManager.shared.notifyNewEmails(
+                        filteredEmails,
+                        folderName: self.folderConfig.name,
+                        folderKey: self.cacheKey
+                    )
+                    
+                    // Update adaptive refresh interval based on activity
+                    self.updateAdaptiveRefreshInterval(newEmailCount: filteredEmails.count)
+                    
                     debugLog("[EmailManager] [\(self.folderConfig.name)] Done in \(String(format: "%.2f", fetchDuration))s, showing \(filteredEmails.count) emails")
                 }
             } catch {

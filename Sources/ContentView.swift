@@ -5,15 +5,59 @@ struct ContentView: View {
     @ObservedObject var emailManager: EmailManager
     @State private var selectedEmail: Email?
     @State private var showingSettings = false
+    @State private var searchText = ""
+    @State private var isSearching = false
+    
+    private var filteredEmails: [Email] {
+        if searchText.isEmpty {
+            return emailManager.emails
+        }
+        let lowercased = searchText.lowercased()
+        return emailManager.emails.filter { email in
+            email.subject.lowercased().contains(lowercased) ||
+            email.from.lowercased().contains(lowercased) ||
+            email.fromName.lowercased().contains(lowercased) ||
+            email.preview.lowercased().contains(lowercased)
+        }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             // Header
             HStack {
-                Text("Emails")
-                    .font(.headline)
+                if isSearching {
+                    HStack {
+                        Image(systemName: "magnifyingglass")
+                            .foregroundColor(.secondary)
+                        TextField("Search emails...", text: $searchText)
+                            .textFieldStyle(.plain)
+                        Button(action: {
+                            searchText = ""
+                            isSearching = false
+                        }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundColor(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color(NSColor.controlBackgroundColor))
+                    .cornerRadius(6)
+                } else {
+                    Text("Emails")
+                        .font(.headline)
+                    
+                    Button(action: {
+                        isSearching = true
+                    }) {
+                        Image(systemName: "magnifyingglass")
+                    }
+                    .buttonStyle(.plain)
+                }
+                
                 Spacer()
-                if emailManager.unreadCount > 0 {
+                if emailManager.unreadCount > 0 && !isSearching {
                     Text("\(emailManager.unreadCount) unread")
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -73,12 +117,12 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding()
                 .background(Color.white)
-            } else if emailManager.emails.isEmpty && !emailManager.isLoading {
+            } else if filteredEmails.isEmpty && !emailManager.isLoading {
                 VStack(spacing: 12) {
-                    Image(systemName: "tray")
+                    Image(systemName: searchText.isEmpty ? "tray" : "magnifyingglass")
                         .font(.largeTitle)
                         .foregroundColor(.secondary)
-                    Text("No emails in folder")
+                    Text(searchText.isEmpty ? "No emails in folder" : "No emails match '\(searchText)'")
                         .foregroundColor(.secondary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -87,7 +131,7 @@ struct ContentView: View {
                 // Show email list with inline detail
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(emailManager.emails) { email in
+                        ForEach(filteredEmails) { email in
                             EmailRowView(emailManager: emailManager, emailId: email.id, isSelected: selectedEmail?.id == email.id)
                                 .onTapGesture {
                                     withAnimation(.easeInOut(duration: 0.2)) {
@@ -355,6 +399,16 @@ struct EmailDetailView: View {
                 .tint(.red)
 
                 Spacer()
+                
+                // Open in Mail.app
+                Button(action: {
+                    openInMailApp()
+                }) {
+                    Label("Open in Mail", systemImage: "envelope.arrow.triangle.branch")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -457,9 +511,27 @@ struct EmailDetailView: View {
 
         controller.showCompose(account: emailManager.account, mode: replyMode) {
             // Email sent successfully - could show notification here
-            print("[Compose] Email sent successfully")
+            debugLog("[Compose] Email sent successfully")
         }
         composeWindowController = controller
+    }
+    
+    private func openInMailApp() {
+        // Create a mailto: URL that Mail.app can open
+        // This opens a new compose window with the email details pre-filled
+        // Unfortunately, there's no standard way to open a specific email in Mail.app
+        // So we create a "reply" style mailto link
+        var components = URLComponents()
+        components.scheme = "mailto"
+        components.path = currentEmail.fromEmail
+        
+        var queryItems: [URLQueryItem] = []
+        queryItems.append(URLQueryItem(name: "subject", value: "Re: \(currentEmail.subject)"))
+        components.queryItems = queryItems
+        
+        if let url = components.url {
+            NSWorkspace.shared.open(url)
+        }
     }
 }
 
@@ -539,6 +611,9 @@ struct WebViewRepresentable: NSViewRepresentable {
 
     private var baseStyle: String {
         """
+        :root {
+            color-scheme: light dark;
+        }
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
             font-size: 12px;
@@ -548,6 +623,20 @@ struct WebViewRepresentable: NSViewRepresentable {
             margin: 0;
             padding: 12px;
             word-wrap: break-word;
+        }
+        @media (prefers-color-scheme: dark) {
+            body {
+                color: #e0e0e0;
+                background: #1e1e1e;
+            }
+            a { color: #6cb6ff; }
+            pre, code {
+                background: #2d2d2d;
+            }
+            blockquote {
+                border-left-color: #555;
+                color: #aaa;
+            }
         }
         img { max-width: 100%; height: auto; }
         a { color: #007AFF; }

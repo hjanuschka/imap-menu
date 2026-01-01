@@ -55,6 +55,9 @@ class FolderMenuItem {
             updateMenuBarIcon(unreadCount: 0, folderName: folderConfig.name)
             button.action = #selector(togglePopover)
             button.target = self
+            
+            // Enable right-click handling
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
         }
 
         // Observe unread count changes
@@ -131,7 +134,36 @@ class FolderMenuItem {
         button.toolTip = folderName
     }
 
-    @objc func togglePopover() {
+    @objc func togglePopover(_ sender: AnyObject?) {
+        guard let event = NSApp.currentEvent else {
+            showPopover()
+            return
+        }
+        
+        if event.type == .rightMouseUp {
+            // Show context menu on right-click
+            let menu = NSMenu()
+            menu.addItem(NSMenuItem(title: "Refresh \(emailManager.folderConfig.name)", action: #selector(refreshEmails), keyEquivalent: ""))
+            menu.addItem(NSMenuItem.separator())
+            menu.addItem(NSMenuItem(title: "Mark All as Read", action: #selector(markAllAsRead), keyEquivalent: ""))
+            menu.addItem(NSMenuItem.separator())
+            menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ""))
+            menu.addItem(NSMenuItem.separator())
+            menu.addItem(NSMenuItem(title: "Quit IMAPMenu", action: #selector(quitApp), keyEquivalent: ""))
+            
+            for item in menu.items {
+                item.target = self
+            }
+            
+            statusItem.menu = menu
+            statusItem.button?.performClick(nil)
+            statusItem.menu = nil
+        } else {
+            showPopover()
+        }
+    }
+    
+    private func showPopover() {
         if let button = statusItem.button {
             if popover.isShown {
                 popover.performClose(nil)
@@ -140,6 +172,24 @@ class FolderMenuItem {
                 NSApp.activate(ignoringOtherApps: true)
             }
         }
+    }
+    
+    @objc func refreshEmails() {
+        emailManager.refresh()
+    }
+    
+    @objc func markAllAsRead() {
+        for email in emailManager.emails where !email.isRead {
+            emailManager.markAsRead(email)
+        }
+    }
+    
+    @objc func openSettings() {
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    }
+    
+    @objc func quitApp() {
+        NSApplication.shared.terminate(nil)
     }
 }
 
