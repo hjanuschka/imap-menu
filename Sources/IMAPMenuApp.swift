@@ -213,7 +213,8 @@ class FolderMenuItem {
                    operation: .copy,
                    fraction: 1.0)
         resized.unlockFocus()
-        resized.isTemplate = true  // Allow system to color it appropriately
+        // Don't set isTemplate for custom images - preserve original colors
+        resized.isTemplate = false
         return resized
     }
 
