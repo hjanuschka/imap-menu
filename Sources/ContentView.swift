@@ -267,11 +267,7 @@ struct EmailRowView: View {
                 HStack(spacing: 4) {
                     Button {
                         // Get current state from manager (not stale loop variable)
-                        guard let currentEmail = emailManager.emails.first(where: { $0.uid == email.uid }) else {
-                            print("⚠️ [LIST] Email not found in manager: uid=\(email.uid)")
-                            return
-                        }
-                        print("🔘 [LIST] Toggle read clicked: uid=\(currentEmail.uid), isRead=\(currentEmail.isRead)")
+                        guard let currentEmail = emailManager.emails.first(where: { $0.uid == email.uid }) else { return }
                         if currentEmail.isRead {
                             emailManager.markAsUnread(currentEmail)
                         } else {
@@ -286,7 +282,6 @@ struct EmailRowView: View {
                     .help(email.isRead ? "Mark as Unread" : "Mark as Read")
 
                     Button {
-                        print("🗑️ [LIST] Delete clicked: uid=\(email.uid)")
                         emailManager.deleteEmail(email)
                     } label: {
                         Image(systemName: "trash")
@@ -393,7 +388,6 @@ struct EmailDetailView: View {
                     markAsReadTimer?.invalidate()
                     markAsReadTimer = nil
 
-                    print("🔘 Toggle read button clicked: uid=\(currentEmail.uid), isRead=\(currentEmail.isRead)")
                     if currentEmail.isRead {
                         emailManager.markAsUnread(currentEmail)
                     } else {
@@ -408,7 +402,6 @@ struct EmailDetailView: View {
                 .controlSize(.small)
 
                 Button(action: {
-                    print("🗑️ Delete button clicked: uid=\(currentEmail.uid)")
                     showDeleteConfirm = true
                 }) {
                     Label("Delete", systemImage: "trash")
