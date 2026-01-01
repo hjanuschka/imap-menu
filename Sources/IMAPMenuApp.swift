@@ -91,9 +91,9 @@ class FolderMenuItem {
         // Get or create the icon based on type
         let iconImage: NSImage? = getMenuBarIcon(for: folderConfig, hasUnread: unreadCount > 0)
         
-        // Apply color if specified
+        // Apply color only for SF Symbols (not for custom URL/file icons)
         let finalImage: NSImage?
-        if !folderConfig.iconColor.isEmpty, let image = iconImage {
+        if folderConfig.iconType == .sfSymbol && !folderConfig.iconColor.isEmpty, let image = iconImage {
             finalImage = image.image(tintedWith: iconColor)
         } else {
             finalImage = iconImage
@@ -128,8 +128,13 @@ class FolderMenuItem {
         button.toolTip = folderName
     }
     
-    // Cache for downloaded images
+    // Cache for downloaded images (cleared on app restart)
     private static var imageCache: [String: NSImage] = [:]
+    
+    // Clear cache for a specific icon (useful when icon changes)
+    static func clearIconCache(for key: String) {
+        imageCache.removeValue(forKey: key)
+    }
     
     private func getMenuBarIcon(for folderConfig: FolderConfig, hasUnread: Bool) -> NSImage? {
         let iconSize = NSSize(width: 18, height: 18)
