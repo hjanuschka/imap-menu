@@ -210,10 +210,16 @@ class FolderMenuItem {
     }
     
     private func resizeImageForMenuBar(_ image: NSImage, size: NSSize) -> NSImage {
-        let resized = NSImage(size: size)
+        // Menu bar is typically 22pt tall, add padding to center vertically
+        let menuBarHeight: CGFloat = 22
+        let padding = (menuBarHeight - size.height) / 2
+        let paddedSize = NSSize(width: size.width, height: menuBarHeight)
+        
+        let resized = NSImage(size: paddedSize)
         resized.lockFocus()
         NSGraphicsContext.current?.imageInterpolation = .high
-        image.draw(in: NSRect(origin: .zero, size: size),
+        // Draw centered with padding
+        image.draw(in: NSRect(x: 0, y: padding, width: size.width, height: size.height),
                    from: NSRect(origin: .zero, size: image.size),
                    operation: .copy,
                    fraction: 1.0)
