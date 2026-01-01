@@ -1,12 +1,15 @@
 import SwiftUI
 
 struct SettingsView: View {
+    @Environment(\.dismiss) private var dismiss
+    
     @State private var config = AppConfig.load()
     @State private var selectedAccountID: UUID?
     @State private var testingConnection = false
     @State private var testMessage = ""
     @State private var showFolderBrowser = false
     @State private var availableFolders: [String] = []
+    @State private var hasUnsavedChanges = false
 
     var body: some View {
         HSplitView {
@@ -63,14 +66,20 @@ struct SettingsView: View {
         .frame(minWidth: 950, minHeight: 750)
         .padding()
         .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
+            ToolbarItem(placement: .status) {
                 Text("IMAPMenu v\(appVersion)")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") {
+                    dismiss()
+                }
+            }
             ToolbarItem(placement: .confirmationAction) {
-                Button("Save & Reload") {
+                Button("Save & Close") {
                     saveConfig()
+                    dismiss()
                 }
             }
         }

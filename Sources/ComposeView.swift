@@ -14,11 +14,13 @@ struct ComposeView: View {
 
     @State private var toField: String = ""
     @State private var ccField: String = ""
+    @State private var bccField: String = ""
     @State private var subjectField: String = ""
     @State private var messageBody: String = ""
     @State private var isSending = false
     @State private var errorMessage: String?
     @State private var showCc = false
+    @State private var showBcc = false
 
     init(account: IMAPAccount, mode: ComposeMode, onDismiss: @escaping () -> Void, onSent: @escaping () -> Void) {
         self.account = account
@@ -31,11 +33,11 @@ struct ComposeView: View {
         case .new:
             break
         case .reply(let email):
-            _toField = State(initialValue: email.fromEmail.isEmpty ? email.from : email.fromEmail)
+            _toField = State(initialValue: formatReplyAddress(name: email.fromName, email: email.fromEmail, fallback: email.from))
             _subjectField = State(initialValue: email.subject.hasPrefix("Re:") ? email.subject : "Re: \(email.subject)")
             _messageBody = State(initialValue: buildQuotedReply(email: email, signature: account.signature))
         case .replyAll(let email):
-            _toField = State(initialValue: email.fromEmail.isEmpty ? email.from : email.fromEmail)
+            _toField = State(initialValue: formatReplyAddress(name: email.fromName, email: email.fromEmail, fallback: email.from))
             _ccField = State(initialValue: extractCcRecipients(email: email, excludeEmail: account.emailAddress))
             _subjectField = State(initialValue: email.subject.hasPrefix("Re:") ? email.subject : "Re: \(email.subject)")
             _messageBody = State(initialValue: buildQuotedReply(email: email, signature: account.signature))
@@ -73,12 +75,20 @@ struct ComposeView: View {
                 }
 
                 // To
-                HStack {
-                    Text("To:")
-                        .frame(width: 60, alignment: .trailing)
-                        .foregroundColor(.secondary)
-                    TextField("recipient@example.com", text: $toField)
-                        .textFieldStyle(.roundedBorder)
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack {
+                        Text("To:")
+                            .frame(width: 60, alignment: .trailing)
+                            .foregroundColor(.secondary)
+                        TextField("recipient@example.com", text: $toField)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                    HStack {
+                        Spacer().frame(width: 64)
+                        Text("Separate multiple addresses with commas")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
                 }
 
                 // CC (toggle)
@@ -87,19 +97,43 @@ struct ComposeView: View {
                         Text("Cc:")
                             .frame(width: 60, alignment: .trailing)
                             .foregroundColor(.secondary)
-                        TextField("cc@example.com", text: $ccField)
+                        TextField("cc1@example.com, cc2@example.com", text: $ccField)
                             .textFieldStyle(.roundedBorder)
                     }
-                } else {
+                }
+                
+                // BCC (toggle)
+                if showBcc || !bccField.isEmpty {
+                    HStack {
+                        Text("Bcc:")
+                            .frame(width: 60, alignment: .trailing)
+                            .foregroundColor(.secondary)
+                        TextField("bcc@example.com", text: $bccField)
+                            .textFieldStyle(.roundedBorder)
+                    }
+                }
+                
+                // Show Cc/Bcc buttons if not already shown
+                if !showCc || !showBcc {
                     HStack {
                         Spacer()
-                            .frame(width: 60)
-                        Button("Add Cc") {
-                            showCc = true
+                            .frame(width: 64)
+                        if !showCc && ccField.isEmpty {
+                            Button("Add Cc") {
+                                showCc = true
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundColor(.accentColor)
+                            .font(.caption)
                         }
-                        .buttonStyle(.plain)
-                        .foregroundColor(.accentColor)
-                        .font(.caption)
+                        if !showBcc && bccField.isEmpty {
+                            Button("Add Bcc") {
+                                showBcc = true
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundColor(.accentColor)
+                            .font(.caption)
+                        }
                         Spacer()
                     }
                 }
@@ -203,6 +237,7 @@ struct ComposeView: View {
                 try connection.sendEmail(
                     to: toField,
                     cc: ccField,
+                    bcc: bccField,
                     subject: subjectField,
                     body: messageBody,
                     inReplyTo: inReplyTo,
@@ -224,6 +259,17 @@ struct ComposeView: View {
             }
         }
     }
+}
+
+// Helper function to format reply address with both name and email
+private func formatReplyAddress(name: String, email: String, fallback: String) -> String {
+    if email.isEmpty {
+        return fallback
+    }
+    if name.isEmpty || name == email {
+        return email
+    }
+    return "\(name) <\(email)>"
 }
 
 // Helper functions for building replies

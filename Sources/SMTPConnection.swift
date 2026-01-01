@@ -174,7 +174,7 @@ class SMTPConnection {
         isConnected = false
     }
 
-    func sendEmail(to: String, cc: String = "", subject: String, body: String, inReplyTo: String? = nil, references: String? = nil) throws {
+    func sendEmail(to: String, cc: String = "", bcc: String = "", subject: String, body: String, inReplyTo: String? = nil, references: String? = nil) throws {
         guard isConnected else {
             throw SMTPError.notConnected
         }
@@ -205,13 +205,24 @@ class SMTPConnection {
             }
         }
 
+        // RCPT TO - BCC recipients (sent to server but NOT included in message headers)
+        if !bcc.isEmpty {
+            let bccRecipients = parseRecipients(bcc)
+            for recipient in bccRecipients {
+                let rcptResponse = try sendCommand("RCPT TO:<\(recipient)>")
+                guard rcptResponse.hasPrefix("250") else {
+                    throw SMTPError.sendFailed("RCPT TO (BCC) failed for \(recipient): \(rcptResponse)")
+                }
+            }
+        }
+
         // DATA
         let dataResponse = try sendCommand("DATA")
         guard dataResponse.hasPrefix("354") else {
             throw SMTPError.sendFailed("DATA failed: \(dataResponse)")
         }
 
-        // Build message
+        // Build message headers - NOTE: BCC is intentionally NOT included
         var message = ""
         message += "From: \(formatAddress(config.fromName, config.fromEmail))\r\n"
         message += "To: \(to)\r\n"
