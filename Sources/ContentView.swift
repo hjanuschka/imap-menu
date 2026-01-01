@@ -368,20 +368,15 @@ struct EmailDetailView: View {
             Divider()
                 .opacity(0.3)
             
-            // Scrollable content
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    // Email header info
-                    emailHeader
-                    
-                    Divider()
-                        .opacity(0.3)
-                        .padding(.horizontal, 14)
-                    
-                    // Email content
-                    emailContent
-                }
-            }
+            // Email header info
+            emailHeader
+            
+            Divider()
+                .opacity(0.3)
+            
+            // Email content - fills remaining space
+            emailContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear {
             loadEmailBody()
@@ -526,23 +521,23 @@ struct EmailDetailView: View {
     private var emailContent: some View {
         Group {
             if isLoading {
-                HStack {
+                VStack {
                     Spacer()
-                    ProgressView()
-                        .scaleEffect(0.7)
-                    Text("Loading...")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                            .scaleEffect(0.8)
+                        Text("Loading...")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                        Spacer()
+                    }
                     Spacer()
                 }
-                .frame(height: 200)
             } else {
                 WebViewRepresentable(html: fullBodyHTML)
-                    .frame(minHeight: 300)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
     }
     
     // MARK: - Helper Methods
