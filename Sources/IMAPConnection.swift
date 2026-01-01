@@ -130,29 +130,50 @@ class IMAPConnection {
     }
 
     private func login() throws {
-        // First get capabilities
-        let capResponse = try sendCommand("CAPABILITY")
+        // First get capabilities (use sendCommandDuringLogin to bypass isConnected check)
+        let capResponse = try sendCommandDuringLogin("CAPABILITY")
         parseCapabilities(capResponse)
         
-        let response = try sendCommand("LOGIN \"\(config.username)\" \"\(config.password)\"")
+        let response = try sendCommandDuringLogin("LOGIN \"\(config.username)\" \"\(config.password)\"")
         if !response.contains("OK") {
             throw IMAPError.authenticationFailed
         }
         
         // Capabilities may change after login, re-fetch
-        let postLoginCap = try sendCommand("CAPABILITY")
+        let postLoginCap = try sendCommandDuringLogin("CAPABILITY")
         parseCapabilities(postLoginCap)
         
         // Enable QRESYNC if available (also enables CONDSTORE)
         if supportsQResync {
-            _ = try? sendCommand("ENABLE QRESYNC")
+            _ = try? sendCommandDuringLogin("ENABLE QRESYNC")
             print("[IMAP] Enabled QRESYNC")
         } else if supportsCondstore {
-            _ = try? sendCommand("ENABLE CONDSTORE")
+            _ = try? sendCommandDuringLogin("ENABLE CONDSTORE")
             print("[IMAP] Enabled CONDSTORE")
         }
         
         print("[IMAP] Capabilities: IDLE=\(supportsIdle), CONDSTORE=\(supportsCondstore), QRESYNC=\(supportsQResync)")
+    }
+    
+    /// Send command during login phase (bypasses isConnected check)
+    private func sendCommandDuringLogin(_ command: String) throws -> String {
+        let tag = nextTag()
+        let fullCommand = "\(tag) \(command)\r\n"
+
+        guard let data = fullCommand.data(using: .utf8),
+              let outputStream = outputStream else {
+            throw IMAPError.connectionFailed("Stream not available")
+        }
+
+        let bytesWritten = data.withUnsafeBytes { buffer in
+            outputStream.write(buffer.bindMemory(to: UInt8.self).baseAddress!, maxLength: data.count)
+        }
+
+        if bytesWritten < 0 {
+            throw IMAPError.connectionFailed("Failed to write to stream")
+        }
+
+        return try readResponse(untilTag: tag)
     }
     
     private func parseCapabilities(_ response: String) {
