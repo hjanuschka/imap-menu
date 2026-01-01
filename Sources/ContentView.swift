@@ -25,6 +25,15 @@ struct ContentView: View {
                     .foregroundColor(.secondary)
                     .frame(width: 30)
 
+                // Show fetch progress
+                if !emailManager.fetchProgress.isEmpty {
+                    Text(emailManager.fetchProgress)
+                        .font(.caption2)
+                        .foregroundColor(.blue)
+                }
+
+                Spacer()
+
                 Button(action: {
                     emailManager.refresh()
                 }) {

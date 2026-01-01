@@ -1,0 +1,10 @@
+⚠️ No AppConfig found in UserDefaults
+🔄 reloadConfigAndCreateMenuItems called
+🧹 Clearing email cache on reload
+⚠️ No AppConfig found in UserDefaults
+    🪟 Popover created with size: (450.0, 550.0)
+📊 [⚙️ Settings] updateMenuBarIcon: icon='envelope', unread=0, iconExists=true
+✅ Created 1 menu items
+📢 [⚙️ Settings] unreadCount changed to 0, icon='envelope'
+📊 [⚙️ Settings] updateMenuBarIcon: icon='envelope', unread=0, iconExists=true
+⚠️ No AppConfig found in UserDefaults

@@ -22,6 +22,12 @@ class FolderMenuItem {
     let popover: NSPopover
     let emailManager: EmailManager
     var cancellables = Set<AnyCancellable>()
+    
+    deinit {
+        print("[FolderMenuItem] DEINIT for \(emailManager.folderConfig.name)")
+        cancellables.removeAll()
+        emailManager.stopFetching()
+    }
 
     init(account: IMAPAccount, folderConfig: FolderConfig) {
         // Create status bar item
@@ -161,12 +167,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func reloadConfigAndCreateMenuItems() {
         print("🔄 reloadConfigAndCreateMenuItems called")
 
-        // Remove existing items
+        // Stop and remove existing items - ensure complete cleanup
         for item in folderMenuItems {
+            item.cancellables.removeAll()  // Cancel all Combine subscriptions
             item.emailManager.stopFetching()
+            item.popover.close()
             NSStatusBar.system.removeStatusItem(item.statusItem)
         }
         folderMenuItems.removeAll()
+        
+        // Clear cache when reloading to prevent stale data accumulation
+        // (individual folders will repopulate on next fetch)
+        print("🧹 Clearing email cache on reload")
 
         // Load config
         let config = AppConfig.load()

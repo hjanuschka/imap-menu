@@ -58,25 +58,49 @@ struct Email: Identifiable, Hashable {
 
 class EmailCache {
     static let shared = EmailCache()
-    
+
     private var cache: [String: [Email]] = [:] // folder path -> emails
     private var lastFetchTime: [String: Date] = [:]
     private var highestUID: [String: UInt32] = [:]
-    
+
     private let cacheQueue = DispatchQueue(label: "com.imapmenu.cache", attributes: .concurrent)
-    
+    private let maxEmailsPerFolder = 500  // Hard limit to prevent memory explosion (reduced from 1000)
+    private let maxTotalEmails = 2000  // Global limit across all folders
+
     func getCachedEmails(for folderPath: String) -> [Email]? {
         cacheQueue.sync {
             return cache[folderPath]
         }
     }
-    
+
     func setCachedEmails(_ emails: [Email], for folderPath: String) {
         cacheQueue.async(flags: .barrier) {
-            self.cache[folderPath] = emails
+            // Enforce per-folder limit
+            let limitedEmails = emails.count > self.maxEmailsPerFolder
+                ? Array(emails.prefix(self.maxEmailsPerFolder))
+                : emails
+            self.cache[folderPath] = limitedEmails
             self.lastFetchTime[folderPath] = Date()
-            if let maxUID = emails.map({ $0.uid }).max() {
+            if let maxUID = limitedEmails.map({ $0.uid }).max() {
                 self.highestUID[folderPath] = maxUID
+            }
+            
+            // Enforce global limit - evict oldest folders if needed
+            let totalCount = self.cache.values.reduce(0) { $0 + $1.count }
+            if totalCount > self.maxTotalEmails {
+                print("[EmailCache] WARNING: Total cached emails (\(totalCount)) exceeds limit (\(self.maxTotalEmails)), evicting oldest")
+                // Sort by last fetch time, evict oldest first
+                let sortedPaths = self.lastFetchTime.sorted { $0.value < $1.value }.map { $0.key }
+                var currentTotal = totalCount
+                for path in sortedPaths where path != folderPath && currentTotal > self.maxTotalEmails {
+                    if let count = self.cache[path]?.count {
+                        self.cache.removeValue(forKey: path)
+                        self.lastFetchTime.removeValue(forKey: path)
+                        self.highestUID.removeValue(forKey: path)
+                        currentTotal -= count
+                        print("[EmailCache] Evicted \(path) (\(count) emails)")
+                    }
+                }
             }
         }
     }
@@ -99,9 +123,10 @@ class EmailCache {
             // Sort by date descending
             existing.sort { $0.date > $1.date }
             
-            // Limit only if maxEmails > 0
-            if maxEmails > 0 && existing.count > maxEmails {
-                existing = Array(existing.prefix(maxEmails))
+            // ALWAYS enforce hard limit to prevent memory explosion
+            let effectiveLimit = maxEmails > 0 ? min(maxEmails, maxEmailsPerFolder) : maxEmailsPerFolder
+            if existing.count > effectiveLimit {
+                existing = Array(existing.prefix(effectiveLimit))
             }
             
             return existing
@@ -132,109 +157,26 @@ class EmailCache {
         }
     }
     
+    func clearAll() {
+        cacheQueue.async(flags: .barrier) {
+            let count = self.cache.values.reduce(0) { $0 + $1.count }
+            self.cache.removeAll()
+            self.lastFetchTime.removeAll()
+            self.highestUID.removeAll()
+            print("[EmailCache] Cleared all cache (\(count) emails)")
+        }
+    }
+    
+    func totalCachedEmails() -> Int {
+        cacheQueue.sync {
+            return cache.values.reduce(0) { $0 + $1.count }
+        }
+    }
+    
     func isCacheValid(for folderPath: String, maxAge: TimeInterval = 300) -> Bool {
         cacheQueue.sync {
             guard let lastFetch = lastFetchTime[folderPath] else { return false }
             return Date().timeIntervalSince(lastFetch) < maxAge
-        }
-    }
-}
-
-// MARK: - Connection Pool for Speed
-
-class IMAPConnectionPool {
-    static let shared = IMAPConnectionPool()
-
-    private var connections: [String: IMAPConnection] = [:] // host:user:folder -> connection
-    private var inUse: Set<String> = [] // Track which connections are currently in use
-    private var lastUsed: [String: Date] = [:]
-    private let poolQueue = DispatchQueue(label: "com.imapmenu.pool")
-    private var cleanupTimer: Timer?
-
-    init() {
-        // Cleanup idle connections every 2 minutes
-        DispatchQueue.main.async {
-            self.cleanupTimer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in
-                self?.cleanupIdleConnections()
-            }
-        }
-    }
-
-    private func connectionKey(for config: IMAPConfig, folder: String) -> String {
-        return "\(config.host):\(config.username):\(folder)"
-    }
-
-    func getConnection(for config: IMAPConfig, folder: String) throws -> IMAPConnection {
-        let key = connectionKey(for: config, folder: folder)
-
-        return try poolQueue.sync {
-            // Check if connection exists and is not in use
-            if let existing = connections[key], !inUse.contains(key) {
-                if existing.isConnected {
-                    inUse.insert(key)
-                    lastUsed[key] = Date()
-                    print("[ConnectionPool] Reusing connection for \(key)")
-                    return existing
-                } else {
-                    // Remove dead connection
-                    connections.removeValue(forKey: key)
-                }
-            }
-
-            // If connection is in use, create a new temporary one
-            if inUse.contains(key) {
-                print("[ConnectionPool] Connection in use, creating temporary for \(key)")
-                let tempConnection = IMAPConnection(config: config)
-                try tempConnection.connect()
-                return tempConnection
-            }
-
-            // Create new connection
-            print("[ConnectionPool] Creating new connection for \(key)")
-            let connection = IMAPConnection(config: config)
-            try connection.connect()
-
-            connections[key] = connection
-            inUse.insert(key)
-            lastUsed[key] = Date()
-
-            return connection
-        }
-    }
-
-    func returnConnection(_ connection: IMAPConnection, for config: IMAPConfig, folder: String) {
-        let key = connectionKey(for: config, folder: folder)
-        poolQueue.sync {
-            inUse.remove(key)
-            lastUsed[key] = Date()
-        }
-    }
-
-    func invalidateConnection(for config: IMAPConfig, folder: String) {
-        let key = connectionKey(for: config, folder: folder)
-        poolQueue.sync {
-            if let conn = connections.removeValue(forKey: key) {
-                conn.disconnect()
-            }
-            inUse.remove(key)
-            lastUsed.removeValue(forKey: key)
-        }
-    }
-
-    private func cleanupIdleConnections() {
-        let maxIdleTime: TimeInterval = 300 // 5 minutes
-        let now = Date()
-
-        poolQueue.sync {
-            for (key, lastUse) in lastUsed {
-                // Only cleanup if not in use and idle for too long
-                if !inUse.contains(key) && now.timeIntervalSince(lastUse) > maxIdleTime {
-                    print("[ConnectionPool] Closing idle connection: \(key)")
-                    connections[key]?.disconnect()
-                    connections.removeValue(forKey: key)
-                    lastUsed.removeValue(forKey: key)
-                }
-            }
         }
     }
 }
@@ -557,15 +499,19 @@ class EmailManager: ObservableObject {
     @Published var unreadCount: Int = 0
     @Published var secondsUntilRefresh: Int = 60
     @Published var lastFetchDuration: TimeInterval = 0
+    @Published var fetchProgress: String = ""  // Shows "Loading 150/500..."
 
-    private var imapConnection: IMAPConnection?
     private var refreshTimer: Timer?
     private var countdownTimer: Timer?
-    private var notificationObserver: Any?
+    // Removed: private var notificationObserver - notifications now handled by AppDelegate only
     private let refreshInterval: Int = 60
-    
+
     private let cache = EmailCache.shared
-    private let connectionPool = IMAPConnectionPool.shared
+
+    // Each folder gets its own dedicated connection and queue for true parallel fetching
+    private var dedicatedConnection: IMAPConnection?
+    private let fetchQueue: DispatchQueue
+    private let connectionLock = NSLock()
 
     let account: IMAPAccount
     let folderConfig: FolderConfig
@@ -574,19 +520,17 @@ class EmailManager: ObservableObject {
         self.account = account
         self.folderConfig = folderConfig
 
-        notificationObserver = NotificationCenter.default.addObserver(
-            forName: NSNotification.Name("RefreshEmails"),
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            self?.fetchEmails(forceFullRefresh: true)
-        }
+        // Create a unique queue for this folder
+        let queueLabel = "com.imapmenu.fetch.\(account.id).\(folderConfig.id)"
+        self.fetchQueue = DispatchQueue(label: queueLabel, qos: .userInitiated)
+
+        // NOTE: Don't listen to RefreshEmails here - AppDelegate recreates all EmailManagers
+        // when config changes, so listening here would cause duplicate fetches.
+        // The startFetching() call in FolderMenuItem.init handles the initial fetch.
     }
 
     deinit {
-        if let observer = notificationObserver {
-            NotificationCenter.default.removeObserver(observer)
-        }
+        print("[EmailManager] [\(folderConfig.name)] DEINIT - stopping fetching")
         stopFetching()
     }
 
@@ -607,6 +551,39 @@ class EmailManager: ObservableObject {
     
     private var cacheKey: String {
         return "\(account.id):\(folderConfig.folderPath)"
+    }
+
+    // MARK: - Dedicated Connection Management
+
+    private func getOrCreateConnection(config: IMAPConfig) throws -> IMAPConnection {
+        // Check if we already have a valid connection (quick check with lock)
+        connectionLock.lock()
+        if let existing = dedicatedConnection, existing.isConnected {
+            connectionLock.unlock()
+            print("[EmailManager] [\(folderConfig.name)] Reusing dedicated connection")
+            return existing
+        }
+        connectionLock.unlock()
+
+        // Create new connection OUTSIDE the lock (connect() does network I/O)
+        print("[EmailManager] [\(folderConfig.name)] Creating new dedicated connection")
+        let connection = IMAPConnection(config: config)
+        try connection.connect()
+        
+        // Store it with the lock
+        connectionLock.lock()
+        dedicatedConnection = connection
+        connectionLock.unlock()
+        
+        return connection
+    }
+
+    private func invalidateConnection() {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+
+        dedicatedConnection?.disconnect()
+        dedicatedConnection = nil
     }
 
     private func startTimers() {
@@ -640,8 +617,11 @@ class EmailManager: ObservableObject {
 
     func stopFetching() {
         stopTimers()
-        // Don't disconnect - let connection pool manage it
+        invalidateConnection()
     }
+
+    private var isFetching = false  // Prevent concurrent fetches
+    private let maxUnreadBeforeSkip = 99  // Stop fetching when we have this many unread
 
     func fetchEmails(forceFullRefresh: Bool = false) {
         guard !account.host.isEmpty else {
@@ -651,18 +631,32 @@ class EmailManager: ObservableObject {
             return
         }
 
+        // Skip fetch if we already have 99+ unread - no point fetching more
+        if unreadCount >= maxUnreadBeforeSkip && !forceFullRefresh {
+            print("[EmailManager] [\(folderConfig.name)] Skipping fetch - already have \(unreadCount) unread (max: \(maxUnreadBeforeSkip))")
+            return
+        }
+
+        // Prevent concurrent fetches - if already fetching, skip this one
+        guard !isFetching else {
+            print("[EmailManager] [\(folderConfig.name)] Skipping fetch - already in progress")
+            return
+        }
+        isFetching = true
+
         DispatchQueue.main.async {
             self.isLoading = true
             self.errorMessage = nil
         }
 
         let startTime = Date()
-        print("[EmailManager] [\(folderConfig.name)] Starting fetch")
+        print("[EmailManager] [\(folderConfig.name)] Starting fetch on dedicated queue")
         print("[EmailManager] [\(folderConfig.name)] Folder path: \(folderConfig.folderPath)")
         print("[EmailManager] [\(folderConfig.name)] Max emails: \(folderConfig.maxEmails), Days: \(folderConfig.daysToFetch)")
         print("[EmailManager] [\(folderConfig.name)] Filter groups: \(folderConfig.filterGroups.count)")
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        // Use dedicated queue for this folder - allows parallel fetching across folders
+        fetchQueue.async { [weak self] in
             guard let self = self else { return }
 
             let imapConfig = IMAPConfig(
@@ -674,14 +668,9 @@ class EmailManager: ObservableObject {
             )
 
             do {
-                // Use connection pool for better performance (per-folder connections)
                 let folderPath = self.folderConfig.folderPath
-                let connection = try self.connectionPool.getConnection(for: imapConfig, folder: folderPath)
-
                 let highestCachedUID = forceFullRefresh ? 0 : self.cache.getHighestUID(for: self.cacheKey)
-
-                print("[EmailManager] [\(self.folderConfig.name)] Connected, fetching (highestCachedUID: \(highestCachedUID))")
-
+                
                 // Get fetch settings from folder config
                 let maxEmails = self.folderConfig.maxEmails  // 0 = unlimited
                 let daysToFetch = self.folderConfig.daysToFetch  // 0 = all time
@@ -689,7 +678,10 @@ class EmailManager: ObservableObject {
                 // Use delta fetch if we have cached emails
                 let fetchedEmails: [Email]
                 if highestCachedUID > 0 && !forceFullRefresh {
-                    // Fetch only new emails since last known UID
+                    // Delta fetch uses dedicated connection (reusable)
+                    let connection = try self.getOrCreateConnection(config: imapConfig)
+                    print("[EmailManager] [\(self.folderConfig.name)] Connected, delta fetch (highestCachedUID: \(highestCachedUID))")
+                    
                     fetchedEmails = try connection.fetchEmailsSince(
                         folder: folderPath,
                         sinceUID: highestCachedUID,
@@ -697,56 +689,142 @@ class EmailManager: ObservableObject {
                     )
                     print("[EmailManager] [\(self.folderConfig.name)] Delta fetch: \(fetchedEmails.count) new emails")
                 } else {
+                    // Full fetch uses parallel connections (creates its own)
+                    print("[EmailManager] [\(self.folderConfig.name)] Starting full parallel fetch (highestCachedUID: \(highestCachedUID))")
                     // Build server-side search query from filter groups
                     let searchQuery = self.buildServerSearchQuery()
 
-                    // Full fetch with configured limits and optional server-side search
-                    fetchedEmails = try connection.fetchEmails(
+                    // Use PARALLEL fetch with multiple connections for speed
+                    // Hard cap to prevent memory explosion
+                    let hardCap = 500
+                    var accumulatedEmails: [Email] = []
+                    accumulatedEmails.reserveCapacity(min(maxEmails > 0 ? maxEmails : hardCap, hardCap))
+                    let emailsLock = NSLock()
+                    var isFirstBatch = true
+                    let targetCount = min(maxEmails > 0 ? maxEmails : hardCap, hardCap)
+
+                    let semaphore = DispatchSemaphore(value: 0)
+                    var fetchError: Error?
+
+                    // Track unread count for early cancellation
+                    var currentUnreadCount = 0
+                    let unreadLock = NSLock()
+                    
+                    IMAPConnection.fetchEmailsParallel(
+                        config: imapConfig,
                         folder: folderPath,
                         limit: maxEmails,
                         daysBack: daysToFetch,
-                        searchQuery: searchQuery
+                        searchQuery: searchQuery,
+                        shouldCancel: {
+                            // Cancel if we've hit 99+ unread
+                            unreadLock.lock()
+                            let count = currentUnreadCount
+                            unreadLock.unlock()
+                            return count >= 99
+                        },
+                        onBatch: { batchEmails in
+                            emailsLock.lock()
+                            accumulatedEmails.append(contentsOf: batchEmails)
+                            // Sort by date descending (newest first) - consistent sorting
+                            accumulatedEmails.sort { $0.date > $1.date }
+                            // Trim to hard cap to prevent memory explosion during fetch
+                            if accumulatedEmails.count > hardCap {
+                                accumulatedEmails = Array(accumulatedEmails.prefix(hardCap))
+                            }
+                            let currentCount = accumulatedEmails.count
+                            let sortedEmails = accumulatedEmails
+                            emailsLock.unlock()
+
+                            // Apply filters
+                            let filteredEmails = self.applyFilters(to: sortedEmails)
+                            let unreadInBatch = filteredEmails.filter { !$0.isRead }.count
+                            
+                            // Update shared unread count for cancellation check
+                            unreadLock.lock()
+                            currentUnreadCount = unreadInBatch
+                            unreadLock.unlock()
+
+                            // Update UI immediately with each batch
+                            DispatchQueue.main.async {
+                                self.emails = filteredEmails
+                                self.unreadCount = unreadInBatch
+                                self.isConnected = true
+                                
+                                // Show progress, or indicate we're stopping early
+                                if unreadInBatch >= self.maxUnreadBeforeSkip {
+                                    self.fetchProgress = "99+ unread, stopping..."
+                                } else {
+                                    self.fetchProgress = "Loading \(currentCount)/\(targetCount)..."
+                                }
+
+                                // Only hide loading spinner after first batch
+                                if isFirstBatch {
+                                    self.isLoading = false
+                                    isFirstBatch = false
+                                }
+                            }
+                        },
+                        onComplete: { error in
+                            fetchError = error
+                            semaphore.signal()
+                        }
                     )
-                    print("[EmailManager] [\(self.folderConfig.name)] Full fetch: \(fetchedEmails.count) emails (max=\(maxEmails), days=\(daysToFetch), search=\(searchQuery ?? "none"))")
+
+                    // Wait for parallel fetch to complete (with timeout to prevent deadlock)
+                    let waitResult = semaphore.wait(timeout: .now() + 180)  // 3 minute max
+                    if waitResult == .timedOut {
+                        print("[EmailManager] [\(self.folderConfig.name)] WARNING: Fetch timed out after 180s")
+                    }
+
+                    if let error = fetchError {
+                        throw error
+                    }
+
+                    emailsLock.lock()
+                    fetchedEmails = accumulatedEmails
+                    emailsLock.unlock()
+                    print("[EmailManager] [\(self.folderConfig.name)] Parallel fetch complete: \(fetchedEmails.count) emails")
                 }
 
-                // Return connection to pool (keep alive)
-                self.connectionPool.returnConnection(connection, for: imapConfig, folder: folderPath)
-                
-                // Merge with cache
+                // Final sort by date
                 let allEmails: [Email]
                 if highestCachedUID > 0 && !forceFullRefresh {
                     allEmails = self.cache.mergeNewEmails(fetchedEmails, for: self.cacheKey, maxEmails: maxEmails)
                 } else {
                     allEmails = fetchedEmails.sorted { $0.date > $1.date }
                 }
-                
+
                 // Update cache
                 self.cache.setCachedEmails(allEmails, for: self.cacheKey)
 
-                // Apply filters
+                // Final UI update with sorted emails
                 let filteredEmails = self.applyFilters(to: allEmails)
-                
+
                 let fetchDuration = Date().timeIntervalSince(startTime)
-                
+
                 DispatchQueue.main.async {
                     self.emails = filteredEmails
                     self.unreadCount = filteredEmails.filter { !$0.isRead }.count
                     self.isConnected = true
                     self.isLoading = false
+                    self.isFetching = false
+                    self.fetchProgress = ""  // Clear progress
                     self.secondsUntilRefresh = self.refreshInterval
                     self.lastFetchDuration = fetchDuration
                     print("[EmailManager] [\(self.folderConfig.name)] Done in \(String(format: "%.2f", fetchDuration))s, showing \(filteredEmails.count) emails")
                 }
             } catch {
-                print("[EmailManager] Error: \(error)")
-                // Invalidate connection on error
-                self.connectionPool.invalidateConnection(for: imapConfig, folder: self.folderConfig.folderPath)
-                
+                print("[EmailManager] [\(self.folderConfig.name)] Error: \(error)")
+                // Invalidate dedicated connection on error
+                self.invalidateConnection()
+
                 DispatchQueue.main.async {
                     self.errorMessage = error.localizedDescription
                     self.isConnected = false
+                    self.fetchProgress = ""
                     self.isLoading = false
+                    self.isFetching = false
                 }
             }
         }
@@ -804,7 +882,7 @@ class EmailManager: ObservableObject {
             cache.updateEmail(self.emails[index], for: cacheKey)
         }
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        fetchQueue.async { [weak self] in
             guard let self = self else { return }
 
             let folderPath = self.folderConfig.folderPath
@@ -816,9 +894,8 @@ class EmailManager: ObservableObject {
                     password: self.account.password,
                     useSSL: self.account.useSSL
                 )
-                let connection = try self.connectionPool.getConnection(for: imapConfig, folder: folderPath)
+                let connection = try self.getOrCreateConnection(config: imapConfig)
                 try connection.markAsRead(folder: folderPath, uid: email.uid)
-                self.connectionPool.returnConnection(connection, for: imapConfig, folder: folderPath)
             } catch {
                 DispatchQueue.main.async {
                     if let index = self.emails.firstIndex(where: { $0.id == email.id }) {
@@ -841,7 +918,7 @@ class EmailManager: ObservableObject {
             cache.updateEmail(self.emails[index], for: cacheKey)
         }
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        fetchQueue.async { [weak self] in
             guard let self = self else { return }
 
             let folderPath = self.folderConfig.folderPath
@@ -853,9 +930,8 @@ class EmailManager: ObservableObject {
                     password: self.account.password,
                     useSSL: self.account.useSSL
                 )
-                let connection = try self.connectionPool.getConnection(for: imapConfig, folder: folderPath)
+                let connection = try self.getOrCreateConnection(config: imapConfig)
                 try connection.markAsUnread(folder: folderPath, uid: email.uid)
-                self.connectionPool.returnConnection(connection, for: imapConfig, folder: folderPath)
             } catch {
                 DispatchQueue.main.async {
                     if let index = self.emails.firstIndex(where: { $0.id == email.id }) {
@@ -876,7 +952,7 @@ class EmailManager: ObservableObject {
 
         cache.removeEmail(uid: email.uid, from: cacheKey)
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        fetchQueue.async { [weak self] in
             guard let self = self else { return }
 
             let folderPath = self.folderConfig.folderPath
@@ -888,9 +964,8 @@ class EmailManager: ObservableObject {
                     password: self.account.password,
                     useSSL: self.account.useSSL
                 )
-                let connection = try self.connectionPool.getConnection(for: imapConfig, folder: folderPath)
+                let connection = try self.getOrCreateConnection(config: imapConfig)
                 try connection.deleteEmail(folder: folderPath, uid: email.uid)
-                self.connectionPool.returnConnection(connection, for: imapConfig, folder: folderPath)
             } catch {
                 DispatchQueue.main.async {
                     self.emails.append(email)
@@ -912,7 +987,12 @@ class EmailManager: ObservableObject {
             return
         }
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        fetchQueue.async { [weak self] in
+            guard let self = self else {
+                DispatchQueue.main.async { completion("") }
+                return
+            }
+
             let folderPath = self.folderConfig.folderPath
             do {
                 let imapConfig = IMAPConfig(
@@ -922,9 +1002,8 @@ class EmailManager: ObservableObject {
                     password: self.account.password,
                     useSSL: self.account.useSSL
                 )
-                let connection = try self.connectionPool.getConnection(for: imapConfig, folder: folderPath)
+                let connection = try self.getOrCreateConnection(config: imapConfig)
                 let fullMessage = try connection.fetchFullMessage(folder: folderPath, uid: email.uid)
-                self.connectionPool.returnConnection(connection, for: imapConfig, folder: folderPath)
 
                 var body = fullMessage
                 if let headerEnd = fullMessage.range(of: "\r\n\r\n") {

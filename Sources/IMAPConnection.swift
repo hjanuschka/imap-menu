@@ -128,7 +128,7 @@ class IMAPConnection {
     
     // MARK: - Optimized Folder Selection
     
-    private func selectFolder(_ folder: String) throws {
+    func selectFolder(_ folder: String) throws {
         // Skip if already selected
         if currentFolder == folder {
             print("[IMAP] Folder '\(folder)' already selected, skipping SELECT")
@@ -239,23 +239,220 @@ class IMAPConnection {
         
         print("[IMAP] Found \(uids.count) messages matching search")
 
-        // If limit is 0, fetch all; otherwise take the most recent N
-        let recentUIDs: ArraySlice<UInt32>
+        // Take the most recent N UIDs (highest UIDs = newest)
+        let recentUIDs: [UInt32]
         if limit > 0 {
-            recentUIDs = uids.suffix(limit)
+            recentUIDs = Array(uids.suffix(limit))
         } else {
-            recentUIDs = uids[...]
+            recentUIDs = uids
         }
-        let uidList = recentUIDs.map { String($0) }.joined(separator: ",")
-        print("[IMAP] Fetching \(recentUIDs.count) emails")
+        print("[IMAP] Fetching \(recentUIDs.count) emails (newest first)")
 
-        let fetchResponse = try sendCommand("UID FETCH \(uidList) (UID FLAGS BODY.PEEK[HEADER])")
-        print("[IMAP] FETCH completed: \(Date().timeIntervalSince(fetchStart))s")
+        // Sort descending so we fetch newest first
+        let sortedUIDs = recentUIDs.sorted(by: >)
 
-        let emails = parseEmailsHeadersOnly(from: fetchResponse)
-        print("[IMAP] Parsing completed: \(Date().timeIntervalSince(fetchStart))s")
+        let batchSize = 100  // Smaller batches for faster first render
+        var allEmails: [Email] = []
 
-        return emails
+        print("[IMAP] Starting batch fetch: \(sortedUIDs.count) emails in batches of \(batchSize)")
+
+        for batchStart in stride(from: 0, to: sortedUIDs.count, by: batchSize) {
+            let batchEnd = min(batchStart + batchSize, sortedUIDs.count)
+            let batchUIDs = Array(sortedUIDs[batchStart..<batchEnd])
+
+            // Use comma-separated UIDs for precise fetching (ranges would include gaps)
+            let uidList = batchUIDs.map { String($0) }.joined(separator: ",")
+
+            print("[IMAP] Batch \(batchStart/batchSize + 1): fetching \(batchUIDs.count) emails (UIDs \(batchUIDs.first ?? 0)-\(batchUIDs.last ?? 0))")
+
+            // Fetch only essential headers - MUCH faster than full HEADER
+            let fetchCommand = "UID FETCH \(uidList) (UID FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID CONTENT-TYPE)])"
+
+            let fetchResponse = try sendCommand(fetchCommand)
+
+            let batchEmails = parseEmailsHeadersOnly(from: fetchResponse)
+            allEmails.append(contentsOf: batchEmails)
+            print("[IMAP] Parsed: \(batchEmails.count) emails (total: \(allEmails.count))")
+        }
+
+        print("[IMAP] FETCH completed: \(Date().timeIntervalSince(fetchStart))s, total \(allEmails.count) emails")
+
+        return allEmails
+    }
+
+    // MARK: - Parallel Streaming Fetch (multiple connections for speed)
+
+    static func fetchEmailsParallel(
+        config: IMAPConfig,
+        folder: String,
+        limit: Int,
+        daysBack: Int = 0,
+        searchQuery: String? = nil,
+        shouldCancel: (() -> Bool)? = nil,  // Optional early termination check
+        onBatch: @escaping ([Email]) -> Void,
+        onComplete: @escaping (Error?) -> Void
+    ) {
+        let fetchStart = Date()
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                // First connection to get UIDs
+                let searchConnection = IMAPConnection(config: config)
+                try searchConnection.connect()
+                try searchConnection.selectFolder(folder)
+
+                // Build search command
+                var searchCommand: String
+                if let query = searchQuery, !query.isEmpty {
+                    searchCommand = "UID SEARCH \(query)"
+                } else if daysBack > 0 {
+                    let dateFormatter = DateFormatter()
+                    dateFormatter.dateFormat = "dd-MMM-yyyy"
+                    dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+                    let sinceDate = Calendar.current.date(byAdding: .day, value: -daysBack, to: Date()) ?? Date()
+                    let sinceDateStr = dateFormatter.string(from: sinceDate)
+                    searchCommand = "UID SEARCH SINCE \(sinceDateStr)"
+                } else {
+                    searchCommand = "UID SEARCH ALL"
+                }
+
+                let searchResponse = try searchConnection.sendCommand(searchCommand)
+                searchConnection.disconnect()
+
+                var uids: [UInt32] = []
+                for line in searchResponse.components(separatedBy: "\r\n") {
+                    if line.hasPrefix("* SEARCH") {
+                        let parts = line.replacingOccurrences(of: "* SEARCH", with: "")
+                            .trimmingCharacters(in: .whitespaces)
+                            .split(separator: " ")
+                        for part in parts {
+                            if let uid = UInt32(part) {
+                                uids.append(uid)
+                            }
+                        }
+                    }
+                }
+
+                guard !uids.isEmpty else {
+                    print("[IMAP] No messages found")
+                    DispatchQueue.main.async { onComplete(nil) }
+                    return
+                }
+
+                // Take most recent N, sorted newest first (hard cap at 300 to prevent memory issues)
+                // Reduced from 500 to 300 to prevent OOM with large emails
+                let maxFetch = min(limit > 0 ? limit : 300, 300)
+                let recentUIDs = Array(uids.suffix(maxFetch).sorted(by: >))
+                print("[IMAP] Parallel fetch: \(recentUIDs.count) emails (capped from \(uids.count), limit was \(limit))")
+
+                // Split UIDs into chunks for parallel fetching
+                let numConnections = 4
+                let chunkSize = (recentUIDs.count + numConnections - 1) / numConnections
+                var chunks: [[UInt32]] = []
+                for i in stride(from: 0, to: recentUIDs.count, by: chunkSize) {
+                    let end = min(i + chunkSize, recentUIDs.count)
+                    chunks.append(Array(recentUIDs[i..<end]))
+                }
+
+                let group = DispatchGroup()
+                let resultsLock = NSLock()
+                var allErrors: [Error] = []
+
+                // Fetch first chunk immediately on main path for fast first render
+                if let firstChunk = chunks.first, !firstChunk.isEmpty {
+                    let firstConnection = IMAPConnection(config: config)
+                    defer { firstConnection.disconnect() }
+
+                    try firstConnection.connect()
+                    try firstConnection.selectFolder(folder)
+
+                    let batchSize = 50
+                    for batchStart in stride(from: 0, to: firstChunk.count, by: batchSize) {
+                        // Check for early cancellation (e.g., 99+ unread reached)
+                        if shouldCancel?() == true {
+                            print("[IMAP] Thread 1: Early cancellation requested")
+                            break
+                        }
+                        
+                        // Use autoreleasepool to free memory after each batch
+                        try autoreleasepool {
+                            let batchEnd = min(batchStart + batchSize, firstChunk.count)
+                            let batchUIDs = Array(firstChunk[batchStart..<batchEnd])
+                            let uidList = batchUIDs.map { String($0) }.joined(separator: ",")
+
+                            let fetchCommand = "UID FETCH \(uidList) (UID FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID CONTENT-TYPE)])"
+                            let fetchResponse = try firstConnection.sendCommand(fetchCommand)
+                            let batchEmails = firstConnection.parseEmailsHeadersOnly(from: fetchResponse)
+
+                            if !batchEmails.isEmpty {
+                                onBatch(batchEmails)
+                            }
+                            print("[IMAP] Thread 1 batch: \(batchEmails.count) emails")
+                        }
+                    }
+                }
+
+                // Fetch remaining chunks in parallel (limit to 2 extra connections)
+                // Skip if already cancelled
+                let remainingChunks = shouldCancel?() == true ? [] : Array(chunks.dropFirst().prefix(2))
+                for (index, chunk) in remainingChunks.enumerated() {
+                    guard !chunk.isEmpty else { continue }
+
+                    group.enter()
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        defer { group.leave() }
+                        
+                        // Check for early cancellation before starting
+                        if shouldCancel?() == true {
+                            print("[IMAP] Thread \(index + 2): Skipped due to cancellation")
+                            return
+                        }
+
+                        autoreleasepool {
+                            let connection = IMAPConnection(config: config)
+                            defer { connection.disconnect() }
+
+                            do {
+                                try connection.connect()
+                                try connection.selectFolder(folder)
+
+                                let uidList = chunk.map { String($0) }.joined(separator: ",")
+                                let fetchCommand = "UID FETCH \(uidList) (UID FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID CONTENT-TYPE)])"
+                                let fetchResponse = try connection.sendCommand(fetchCommand)
+                                let emails = connection.parseEmailsHeadersOnly(from: fetchResponse)
+
+                                if !emails.isEmpty {
+                                    onBatch(emails)
+                                }
+                                print("[IMAP] Thread \(index + 2): \(emails.count) emails")
+                            } catch {
+                                resultsLock.lock()
+                                allErrors.append(error)
+                                resultsLock.unlock()
+                                print("[IMAP] Thread \(index + 2) error: \(error)")
+                            }
+                        }
+                    }
+                }
+
+                // Wait with timeout to prevent deadlock
+                let waitResult = group.wait(timeout: .now() + 120)
+                if waitResult == .timedOut {
+                    print("[IMAP] WARNING: Parallel fetch timed out after 120s")
+                }
+
+                print("[IMAP] Parallel fetch completed: \(Date().timeIntervalSince(fetchStart))s")
+                DispatchQueue.main.async {
+                    onComplete(allErrors.first)
+                }
+
+            } catch {
+                print("[IMAP] Parallel fetch error: \(error)")
+                DispatchQueue.main.async {
+                    onComplete(error)
+                }
+            }
+        }
     }
 
     func listFolders() throws -> [String] {
@@ -463,7 +660,7 @@ class IMAPConnection {
     }
 
     @discardableResult
-    private func sendCommand(_ command: String) throws -> String {
+    func sendCommand(_ command: String) throws -> String {
         guard isConnected || command.hasPrefix("LOGIN") || command == "LOGOUT" else {
             throw IMAPError.notConnected
         }
@@ -493,10 +690,19 @@ class IMAPConnection {
             throw IMAPError.connectionFailed("Stream not available")
         }
 
-        var response = ""
-        let bufferSize = 16384
+        // Use Data for efficient appending (not String which is O(n²))
+        var responseData = Data()
+        responseData.reserveCapacity(32768)  // Pre-allocate smaller buffer
+
+        let bufferSize = 16384  // Reduced from 32KB to 16KB
+        let maxResponseSize = 5 * 1024 * 1024  // 5MB max (reduced from 10MB)
         var buffer = [UInt8](repeating: 0, count: bufferSize)
         let startTime = Date()
+
+        let tagOK = tag.map { "\($0) OK".data(using: .utf8)! }
+        let tagNO = tag.map { "\($0) NO".data(using: .utf8)! }
+        let tagBAD = tag.map { "\($0) BAD".data(using: .utf8)! }
+        let crlf = "\r\n".data(using: .utf8)!
 
         while true {
             if Date().timeIntervalSince(startTime) > timeout {
@@ -504,21 +710,28 @@ class IMAPConnection {
                 throw IMAPError.timeout
             }
 
+            // Prevent memory explosion
+            if responseData.count > maxResponseSize {
+                connectionQueue.sync { _isConnected = false }
+                throw IMAPError.fetchFailed("Response too large (\(responseData.count) bytes)")
+            }
+
             if inputStream.hasBytesAvailable {
                 let bytesRead = inputStream.read(&buffer, maxLength: bufferSize)
                 if bytesRead > 0 {
-                    if let chunk = String(bytes: buffer[0..<bytesRead], encoding: .utf8) {
-                        response += chunk
-                    } else if let chunk = String(bytes: buffer[0..<bytesRead], encoding: .isoLatin1) {
-                        response += chunk
-                    }
+                    responseData.append(buffer, count: bytesRead)
 
-                    if let tag = tag {
-                        if response.contains("\(tag) OK") || response.contains("\(tag) NO") || response.contains("\(tag) BAD") {
+                    // Check for completion
+                    if let tagOK = tagOK, let tagNO = tagNO, let tagBAD = tagBAD {
+                        // Check entire response for tag (handles both small and large responses)
+                        if responseData.range(of: tagOK) != nil ||
+                           responseData.range(of: tagNO) != nil ||
+                           responseData.range(of: tagBAD) != nil {
                             break
                         }
                     } else {
-                        if response.contains("\r\n") {
+                        // No tag specified - just wait for CRLF
+                        if responseData.suffix(64).range(of: crlf) != nil {
                             break
                         }
                     }
@@ -527,11 +740,13 @@ class IMAPConnection {
                     throw IMAPError.connectionFailed("Read error")
                 }
             } else {
-                Thread.sleep(forTimeInterval: 0.01)
+                Thread.sleep(forTimeInterval: 0.005)
             }
         }
 
-        return response
+        return String(data: responseData, encoding: .utf8)
+            ?? String(data: responseData, encoding: .isoLatin1)
+            ?? ""
     }
 
     private func parseEmailsHeadersOnly(from response: String) -> [Email] {
@@ -560,15 +775,38 @@ class IMAPConnection {
             isRead = flags.contains("\\Seen")
         }
 
+        // Parse INTERNALDATE (receive date) - this is what we sort by!
+        var receivedDate = Date()
+        if let internalDateMatch = block.range(of: #"INTERNALDATE "([^"]+)""#, options: .regularExpression) {
+            let dateStr = String(block[internalDateMatch])
+                .replacingOccurrences(of: "INTERNALDATE \"", with: "")
+                .replacingOccurrences(of: "\"", with: "")
+            if let parsed = parseInternalDate(dateStr) {
+                receivedDate = parsed
+            }
+        }
+
         var subject = ""
         var from = ""
         var to = ""
-        var date = Date()
+        var date = Date()  // From header (not used for sorting, just for processHeader compatibility)
         var contentType = "text/plain"
         var boundary = ""
 
-        if let headerMarker = block.range(of: "BODY[HEADER]") {
-            let afterMarker = block[headerMarker.upperBound...]
+        // Handle both BODY[HEADER] and BODY[HEADER.FIELDS (...)]
+        var headerMarker: Range<String.Index>? = block.range(of: "BODY[HEADER.FIELDS")
+        if headerMarker == nil {
+            headerMarker = block.range(of: "BODY[HEADER]")
+        }
+
+        if let marker = headerMarker {
+            // Skip to after the closing bracket of the BODY[...] part
+            let afterMarker: Substring
+            if let closingBracket = block[marker.upperBound...].range(of: "]") {
+                afterMarker = block[closingBracket.upperBound...]
+            } else {
+                afterMarker = block[marker.upperBound...]
+            }
 
             if let _ = afterMarker.range(of: "{"),
                let braceEnd = afterMarker.range(of: "}") {
@@ -616,13 +854,21 @@ class IMAPConnection {
             fromEmail: parsedFrom.email,
             fromName: parsedFrom.name,
             to: to,
-            date: date,
+            date: receivedDate,  // Use INTERNALDATE (receive date) for sorting!
             preview: "",
             body: "",
             contentType: contentType,
             boundary: boundary,
             isRead: isRead
         )
+    }
+
+    private func parseInternalDate(_ dateStr: String) -> Date? {
+        // INTERNALDATE format: "31-Dec-2025 12:34:56 +0000"
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "dd-MMM-yyyy HH:mm:ss Z"
+        return formatter.date(from: dateStr)
     }
 
     private func processHeader(_ header: String, subject: inout String, from: inout String, to: inout String, date: inout Date, contentType: inout String, boundary: inout String) {
