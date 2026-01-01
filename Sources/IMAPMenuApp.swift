@@ -99,9 +99,15 @@ class FolderMenuItem {
             finalImage = iconImage
         }
 
-        // Create icon attachment
+        // Create icon attachment with proper bounds for menu bar
         let iconAttachment = NSTextAttachment()
         iconAttachment.image = finalImage
+        
+        // Set bounds to vertically center the icon in the menu bar
+        if let image = finalImage {
+            let yOffset = (22 - image.size.height) / 2 - 3  // Adjust for baseline
+            iconAttachment.bounds = CGRect(x: 0, y: yOffset, width: image.size.width, height: image.size.height)
+        }
 
         let iconString = NSMutableAttributedString(attachment: iconAttachment)
 
@@ -210,16 +216,10 @@ class FolderMenuItem {
     }
     
     private func resizeImageForMenuBar(_ image: NSImage, size: NSSize) -> NSImage {
-        // Menu bar is typically 22pt tall, add padding to center vertically
-        let menuBarHeight: CGFloat = 22
-        let padding = (menuBarHeight - size.height) / 2
-        let paddedSize = NSSize(width: size.width, height: menuBarHeight)
-        
-        let resized = NSImage(size: paddedSize)
+        let resized = NSImage(size: size)
         resized.lockFocus()
         NSGraphicsContext.current?.imageInterpolation = .high
-        // Draw centered with padding
-        image.draw(in: NSRect(x: 0, y: padding, width: size.width, height: size.height),
+        image.draw(in: NSRect(origin: .zero, size: size),
                    from: NSRect(origin: .zero, size: image.size),
                    operation: .copy,
                    fraction: 1.0)
