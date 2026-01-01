@@ -37,7 +37,7 @@ class FolderMenuItem {
         // Create email manager
         emailManager = EmailManager(account: account, folderConfig: folderConfig)
 
-        // Create popover
+        // Create popover with modern appearance
         popover = NSPopover()
         popover.contentSize = folderConfig.popoverWidth.size
         popover.behavior = .transient
@@ -48,7 +48,12 @@ class FolderMenuItem {
         let contentView = ContentView(emailManager: emailManager)
             .frame(width: folderConfig.popoverWidth.size.width,
                    height: folderConfig.popoverWidth.size.height)
-        popover.contentViewController = NSHostingController(rootView: contentView)
+        
+        let hostingController = NSHostingController(rootView: contentView)
+        // Remove default background to let vibrancy show through
+        hostingController.view.wantsLayer = true
+        hostingController.view.layer?.backgroundColor = .clear
+        popover.contentViewController = hostingController
 
         // Set up button
         if let button = statusItem.button {
