@@ -63,6 +63,11 @@ struct SettingsView: View {
         .frame(minWidth: 950, minHeight: 750)
         .padding()
         .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Text("IMAPMenu v\(appVersion)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Save & Reload") {
                     saveConfig()
@@ -90,6 +95,10 @@ struct SettingsView: View {
         }
     }
 
+    private var appVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
+    }
+    
     private func saveConfig() {
         config.save()
         NotificationCenter.default.post(name: NSNotification.Name("RefreshEmails"), object: nil)

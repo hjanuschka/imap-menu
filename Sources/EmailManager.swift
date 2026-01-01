@@ -1,7 +1,7 @@
 import Foundation
 import Combine
 
-struct Email: Identifiable, Hashable {
+struct Email: Identifiable, Hashable, Codable {
     let id: String
     let uid: UInt32
     let subject: String
@@ -66,6 +66,78 @@ class EmailCache {
     private let cacheQueue = DispatchQueue(label: "com.imapmenu.cache", attributes: .concurrent)
     private let maxEmailsPerFolder = 500  // Hard limit to prevent memory explosion (reduced from 1000)
     private let maxTotalEmails = 2000  // Global limit across all folders
+    
+    private let cacheDirectory: URL
+    
+    private init() {
+        // Set up cache directory
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        cacheDirectory = appSupport.appendingPathComponent("IMAPMenu/EmailCache", isDirectory: true)
+        
+        // Create directory if needed
+        try? FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+        
+        // Load persisted cache
+        loadFromDisk()
+    }
+    
+    private func cacheFileURL(for folderPath: String) -> URL {
+        let safeName = folderPath.replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+        return cacheDirectory.appendingPathComponent("\(safeName).json")
+    }
+    
+    private func loadFromDisk() {
+        cacheQueue.async(flags: .barrier) {
+            guard let files = try? FileManager.default.contentsOfDirectory(at: self.cacheDirectory, includingPropertiesForKeys: nil) else {
+                return
+            }
+            
+            for file in files where file.pathExtension == "json" {
+                guard let data = try? Data(contentsOf: file),
+                      let cached = try? JSONDecoder().decode(CachedFolder.self, from: data) else {
+                    continue
+                }
+                
+                // Only load if not too old (max 1 hour)
+                if Date().timeIntervalSince(cached.lastFetchTime) < 3600 {
+                    self.cache[cached.folderPath] = cached.emails
+                    self.lastFetchTime[cached.folderPath] = cached.lastFetchTime
+                    self.highestUID[cached.folderPath] = cached.highestUID
+                    debugLog("[EmailCache] Loaded \(cached.emails.count) emails from disk for \(cached.folderPath)")
+                }
+            }
+        }
+    }
+    
+    private func saveToDisk(folderPath: String) {
+        guard let emails = cache[folderPath],
+              let lastFetch = lastFetchTime[folderPath] else { return }
+        
+        let cached = CachedFolder(
+            folderPath: folderPath,
+            emails: emails,
+            lastFetchTime: lastFetch,
+            highestUID: highestUID[folderPath] ?? 0
+        )
+        
+        DispatchQueue.global(qos: .utility).async {
+            do {
+                let data = try JSONEncoder().encode(cached)
+                try data.write(to: self.cacheFileURL(for: folderPath))
+                debugLog("[EmailCache] Saved \(emails.count) emails to disk for \(folderPath)")
+            } catch {
+                debugLog("[EmailCache] Failed to save: \(error)")
+            }
+        }
+    }
+    
+    private struct CachedFolder: Codable {
+        let folderPath: String
+        let emails: [Email]
+        let lastFetchTime: Date
+        let highestUID: UInt32
+    }
 
     func getCachedEmails(for folderPath: String) -> [Email]? {
         cacheQueue.sync {
@@ -102,6 +174,9 @@ class EmailCache {
                     }
                 }
             }
+            
+            // Save to disk for persistence across app restarts
+            self.saveToDisk(folderPath: folderPath)
         }
     }
     
