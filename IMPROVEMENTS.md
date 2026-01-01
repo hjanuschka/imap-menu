@@ -1,77 +1,71 @@
-# Potential Improvements for IMAPMenu
+# IMAPMenu Improvements
 
-## High Priority (Performance & Reliability)
+## Completed ✅
 
-### 1. Add Debug Logging Toggle
-Currently there are 71 print statements. Add a debug mode toggle to disable verbose logging in production.
+### Memory & Performance
+- [x] Fixed memory leak from duplicate notification listener (was causing 2x fetches)
+- [x] Added global cache limit (2000 emails) with LRU eviction
+- [x] Reduced per-folder cache from 1000 to 500 emails
+- [x] Stop fetching at 99+ unread (no point showing more)
+- [x] Early cancellation in parallel fetch when hitting limits
+- [x] Reduced response buffer from 10MB to 5MB
+- [x] Connection keep-alive (NOOP every 4 minutes)
+- [x] Adaptive polling (60s → 180s when inbox is quiet)
+- [x] Disk cache persistence for faster startup
 
-### 2. Connection Pooling / Keep-Alive
-The dedicated connection per folder is good, but connections can go stale. Add periodic NOOP commands to keep connections alive and avoid reconnection overhead.
+### Features
+- [x] macOS notifications for new emails
+- [x] Search/filter emails locally
+- [x] Dark mode support in email WebView
+- [x] Right-click context menu on menu bar icon
+- [x] "Open in Mail.app" button
+- [x] Show last sync time in footer
+- [x] App version in Settings
 
-### 3. Smarter Delta Fetch
-Currently delta fetch only works if `highestCachedUID > 0`. Consider:
-- Persisting `highestUID` to disk so delta fetch works across app restarts
-- Using IMAP IDLE for real-time push notifications instead of polling
+### Code Quality
+- [x] Debug logging toggle (disabled in release)
+- [x] Centralized debugLog() function
+- [x] Proper cleanup in deinit methods
 
-### 4. Reduce Polling Frequency When Idle
-If no new emails in last N fetches, gradually increase the refresh interval (e.g., 60s → 120s → 300s).
+## Future Ideas 💡
 
-### 5. Background Fetch Optimization
-Use `URLSession` background tasks or proper background app refresh on macOS for better battery life.
+### High Priority
+- [ ] IMAP IDLE for real-time push notifications (no polling needed)
+- [ ] Keyboard navigation (j/k to move, r to reply, d to delete)
+- [ ] Auto-reconnect with exponential backoff on connection failure
 
-## Medium Priority (UX Improvements)
+### Medium Priority
+- [ ] Unread badge on app icon in Dock (when visible)
+- [ ] Quick compose from menu bar
+- [ ] Swipe gestures for mark read/delete
+- [ ] Email threading/conversation view
+- [ ] Attachment preview/download
 
-### 6. Keyboard Navigation
-Add keyboard shortcuts for:
-- `j/k` - Move up/down in email list
-- `r` - Reply
-- `a` - Reply all
-- `d` - Delete
-- `u` - Mark unread
-- `Space` - Toggle email detail view
+### Low Priority
+- [ ] Unit tests for MIME parsing and filters
+- [ ] Localization support
+- [ ] Custom notification sounds
+- [ ] Multiple account support improvements (unified inbox view)
+- [ ] Export emails to mbox/eml format
 
-### 7. Search Functionality
-Add local search across cached emails (subject, sender, body).
+## Architecture Notes
 
-### 8. Notification Support
-Show macOS notifications for new unread emails.
+### Connection Management
+- Each folder has its own dedicated IMAP connection
+- Connections are reused for delta fetches
+- Keep-alive NOOP prevents server timeout
+- Parallel fetch creates temporary connections for speed
 
-### 9. Quick Actions from Menu Bar
-Right-click on menu bar icon could show:
-- Recent emails
-- Quick compose
-- Mark all as read
+### Caching Strategy
+- In-memory cache with 500 emails per folder limit
+- Global limit of 2000 emails across all folders
+- LRU eviction when limits exceeded
+- Disk persistence to ~/Library/Application Support/IMAPMenu/
+- Cache expires after 1 hour on disk
 
-### 10. Dark Mode Support
-The email body WebView has hardcoded white background. Respect system appearance.
-
-## Low Priority (Code Quality)
-
-### 11. Extract IMAP Protocol Parser
-The IMAP parsing code in `IMAPConnection` is mixed with connection logic. Consider separating:
-- `IMAPProtocol` - Parsing IMAP responses
-- `IMAPConnection` - Network handling
-- `IMAPSession` - High-level operations
-
-### 12. Unit Tests
-Add tests for:
-- MIME parsing
-- Email filtering
-- Cache eviction logic
-
-### 13. Error Recovery
-Add automatic reconnection with exponential backoff when connection fails.
-
-### 14. Memory Profiling
-Add Instruments integration points to track memory usage over time.
-
-### 15. Localization
-Extract user-facing strings for localization support.
-
-## Quick Wins (Can implement now)
-
-### A. Reduce unnecessary print statements in production
-### B. Add app version/build info to settings
-### C. Show last successful sync time in footer
-### D. Add "Open in Mail.app" button for emails
-### E. Cache email body content to avoid re-fetching
+### Notification Flow
+1. Emails fetched from server
+2. Filtered by user rules
+3. Compared against previously notified UIDs
+4. New unread emails trigger notification
+5. UIDs tracked to prevent duplicate notifications
