@@ -179,7 +179,7 @@ struct ComposeView: View {
                     host: account.smtpHost,
                     port: account.smtpPort,
                     username: account.effectiveSmtpUsername,
-                    password: account.password,
+                    password: account.effectiveSmtpPassword,
                     useSSL: account.smtpUseSSL,
                     fromEmail: account.emailAddress,
                     fromName: account.name

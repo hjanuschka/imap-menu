@@ -201,6 +201,16 @@ struct AccountDetailView: View {
                                     .foregroundColor(.secondary)
                             }
                         }
+                        
+                        HStack {
+                            SecureField("SMTP Password (if different)", text: $account.smtpPassword)
+                                .textContentType(.password)
+                            if account.smtpPassword.isEmpty {
+                                Text("Uses IMAP password")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
 
                         VStack(alignment: .leading, spacing: 4) {
                             Text("Email Signature:")
@@ -353,7 +363,7 @@ struct AccountDetailView: View {
                     host: account.smtpHost,
                     port: account.smtpPort,
                     username: account.effectiveSmtpUsername,
-                    password: account.password,
+                    password: account.effectiveSmtpPassword,
                     useSSL: account.smtpUseSSL,
                     fromEmail: account.emailAddress,
                     fromName: account.name

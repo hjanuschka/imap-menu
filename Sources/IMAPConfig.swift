@@ -464,9 +464,10 @@ struct IMAPAccount: Codable, Identifiable, Equatable, Hashable {
     var smtpPort: Int
     var smtpUseSSL: Bool
     var smtpUsername: String  // If empty, uses IMAP username
+    var smtpPassword: String  // If empty, uses IMAP password
     var signature: String     // Text signature appended to outgoing emails
 
-    init(id: UUID = UUID(), name: String, host: String, port: Int = 993, username: String, password: String = "", useSSL: Bool = true, folders: [FolderConfig] = [], smtpHost: String = "", smtpPort: Int = 587, smtpUseSSL: Bool = true, smtpUsername: String = "", signature: String = "") {
+    init(id: UUID = UUID(), name: String, host: String, port: Int = 993, username: String, password: String = "", useSSL: Bool = true, folders: [FolderConfig] = [], smtpHost: String = "", smtpPort: Int = 587, smtpUseSSL: Bool = true, smtpUsername: String = "", smtpPassword: String = "", signature: String = "") {
         self.id = id
         self.name = name
         self.host = host
@@ -479,6 +480,7 @@ struct IMAPAccount: Codable, Identifiable, Equatable, Hashable {
         self.smtpPort = smtpPort
         self.smtpUseSSL = smtpUseSSL
         self.smtpUsername = smtpUsername
+        self.smtpPassword = smtpPassword
         self.signature = signature
     }
 
@@ -500,6 +502,7 @@ struct IMAPAccount: Codable, Identifiable, Equatable, Hashable {
         smtpPort = try container.decodeIfPresent(Int.self, forKey: .smtpPort) ?? 587
         smtpUseSSL = try container.decodeIfPresent(Bool.self, forKey: .smtpUseSSL) ?? true
         smtpUsername = try container.decodeIfPresent(String.self, forKey: .smtpUsername) ?? ""
+        smtpPassword = try container.decodeIfPresent(String.self, forKey: .smtpPassword) ?? ""
         signature = try container.decodeIfPresent(String.self, forKey: .signature) ?? ""
     }
 
@@ -512,6 +515,10 @@ struct IMAPAccount: Codable, Identifiable, Equatable, Hashable {
 
     var effectiveSmtpUsername: String {
         smtpUsername.isEmpty ? username : smtpUsername
+    }
+    
+    var effectiveSmtpPassword: String {
+        smtpPassword.isEmpty ? password : smtpPassword
     }
 
     var hasSmtpConfigured: Bool {
@@ -542,7 +549,13 @@ struct AppConfig: Codable {
 
             for i in 0..<config.accounts.count {
                 let account = config.accounts[i]
+                // Load IMAP password
                 config.accounts[i].password = KeychainHelper.getPassword(for: account.username, host: account.host) ?? ""
+                // Load SMTP password (if configured separately)
+                if !account.smtpHost.isEmpty {
+                    let smtpUser = account.smtpUsername.isEmpty ? account.username : account.smtpUsername
+                    config.accounts[i].smtpPassword = KeychainHelper.getPassword(for: smtpUser, host: account.smtpHost) ?? ""
+                }
             }
 
             return config
@@ -559,10 +572,17 @@ struct AppConfig: Codable {
         var configToSave = self
         for i in 0..<configToSave.accounts.count {
             let account = configToSave.accounts[i]
+            // Save IMAP password
             if !account.password.isEmpty {
                 KeychainHelper.savePassword(account.password, for: account.username, host: account.host)
             }
+            // Save SMTP password (if different from IMAP)
+            if !account.smtpHost.isEmpty && !account.smtpPassword.isEmpty {
+                let smtpUser = account.smtpUsername.isEmpty ? account.username : account.smtpUsername
+                KeychainHelper.savePassword(account.smtpPassword, for: smtpUser, host: account.smtpHost)
+            }
             configToSave.accounts[i].password = ""
+            configToSave.accounts[i].smtpPassword = ""
         }
 
         if let data = try? JSONEncoder().encode(configToSave) {
