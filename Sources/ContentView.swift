@@ -44,7 +44,7 @@ struct ContentView: View {
             // Footer
             footerView
         }
-        .background(VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow))
+        .background(Color(NSColor.windowBackgroundColor))
         .sheet(isPresented: $showingSettings) {
             SettingsView()
         }
@@ -112,7 +112,7 @@ struct ContentView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(Color.primary.opacity(0.06))
+        .background(Color.black.opacity(0.05))
         .cornerRadius(8)
     }
     
@@ -199,25 +199,7 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Visual Effect Blur (Vibrancy)
 
-struct VisualEffectBlur: NSViewRepresentable {
-    let material: NSVisualEffectView.Material
-    let blendingMode: NSVisualEffectView.BlendingMode
-    
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.material = material
-        view.blendingMode = blendingMode
-        view.state = .active
-        return view
-    }
-    
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
-        nsView.material = material
-        nsView.blendingMode = blendingMode
-    }
-}
 
 // MARK: - Email Row View
 
@@ -315,9 +297,9 @@ struct EmailRowView: View {
     
     private var backgroundColor: Color {
         if isSelected {
-            return Color.accentColor.opacity(0.2)
+            return Color.accentColor.opacity(0.12)
         } else if isHovered {
-            return Color.primary.opacity(0.06)
+            return Color.black.opacity(0.04)
         }
         return Color.clear
     }
@@ -328,7 +310,7 @@ struct EmailRowView: View {
                 .font(.system(size: 10))
                 .foregroundColor(color)
                 .frame(width: 20, height: 20)
-                .background(Circle().fill(Color.primary.opacity(0.1)))
+                .background(Circle().fill(Color.black.opacity(0.06)))
         }
         .buttonStyle(.plain)
     }
@@ -475,7 +457,7 @@ struct EmailDetailView: View {
                 .font(.system(size: 12))
                 .foregroundColor(color)
                 .frame(width: 28, height: 28)
-                .background(Circle().fill(Color.primary.opacity(0.06)))
+                .background(Circle().fill(Color.black.opacity(0.05)))
         }
         .buttonStyle(.plain)
         .help(tooltip)
@@ -601,7 +583,7 @@ struct EmailDetailView: View {
         let parser = MIMEParser(body: email.body, contentType: email.contentType, boundary: email.boundary)
         var html = parser.getHTMLContent()
         
-        // Inject modern styling with transparent background
+        // Inject clean styling for white background
         let style = """
         <style>
             * { box-sizing: border-box; }
@@ -609,25 +591,23 @@ struct EmailDetailView: View {
                 font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
                 font-size: 13px;
                 line-height: 1.6;
-                color: #333;
+                color: #1d1d1f;
                 padding: 0;
                 margin: 0;
-                background: transparent !important;
+                background: #fff !important;
                 -webkit-font-smoothing: antialiased;
             }
             @media (prefers-color-scheme: dark) {
-                html, body { color: #e5e5e7 !important; }
+                html, body { background: #1e1e1e !important; color: #e5e5e7 !important; }
                 a { color: #6eb5ff !important; }
                 pre, code { background: rgba(255,255,255,0.08) !important; }
                 blockquote { border-left-color: rgba(255,255,255,0.2) !important; color: #aaa !important; }
-                table { border-color: rgba(255,255,255,0.1) !important; }
-                td, th { border-color: rgba(255,255,255,0.1) !important; }
             }
             img { max-width: 100%; height: auto; }
             pre, code {
                 font-family: 'SF Mono', Menlo, monospace;
                 font-size: 12px;
-                background: rgba(128,128,128,0.1);
+                background: #f5f5f7;
                 border-radius: 4px;
                 padding: 2px 6px;
             }
@@ -635,16 +615,14 @@ struct EmailDetailView: View {
             blockquote {
                 margin: 8px 0;
                 padding-left: 12px;
-                border-left: 3px solid rgba(128,128,128,0.3);
+                border-left: 3px solid #e5e5e5;
                 color: #666;
             }
             a { color: #0071e3; text-decoration: none; }
             a:hover { text-decoration: underline; }
             table { border-collapse: collapse; }
             td, th { padding: 4px 8px; }
-            hr { border: none; border-top: 1px solid rgba(128,128,128,0.2); margin: 16px 0; }
-            /* Reset common email backgrounds */
-            div, table, tr, td, th { background: transparent !important; }
+            hr { border: none; border-top: 1px solid #e5e5e5; margin: 16px 0; }
         </style>
         """
         
