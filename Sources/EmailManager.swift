@@ -613,6 +613,12 @@ class EmailManager: ObservableObject {
         stopFetching()
     }
 
+    // IDLE mode support
+    private var idleConnection: IMAPConnection?
+    private var isIdleMode = false
+    private var idleQueue: DispatchQueue?
+    private var shouldStopIdle = false
+    
     func startFetching() {
         // Try to show cached emails immediately
         if let cached = cache.getCachedEmails(for: cacheKey) {
@@ -625,7 +631,184 @@ class EmailManager: ObservableObject {
         }
         
         fetchEmails(forceFullRefresh: false)
-        startTimers()
+        
+        // Try to use IDLE if available, otherwise fall back to polling
+        startIdleOrPolling()
+    }
+    
+    /// Start IDLE mode if supported, otherwise use traditional polling
+    private func startIdleOrPolling() {
+        // First do an initial fetch to get connection and check capabilities
+        let imapConfig = IMAPConfig(
+            host: account.host,
+            port: account.port,
+            username: account.username,
+            password: account.password,
+            useSSL: account.useSSL
+        )
+        
+        fetchQueue.async { [weak self] in
+            guard let self = self else { return }
+            
+            do {
+                let connection = try self.getOrCreateConnection(config: imapConfig)
+                
+                if connection.supportsIdle {
+                    debugLog("[EmailManager] [\(self.folderConfig.name)] Server supports IDLE - using push notifications")
+                    DispatchQueue.main.async {
+                        self.startIdleMode()
+                    }
+                } else {
+                    debugLog("[EmailManager] [\(self.folderConfig.name)] Server doesn't support IDLE - using polling")
+                    DispatchQueue.main.async {
+                        self.startTimers()
+                    }
+                }
+            } catch {
+                debugLog("[EmailManager] [\(self.folderConfig.name)] Connection failed, falling back to polling: \(error)")
+                DispatchQueue.main.async {
+                    self.startTimers()
+                }
+            }
+        }
+    }
+    
+    /// Start IDLE mode for real-time push notifications
+    private func startIdleMode() {
+        guard !isIdleMode else { return }
+        
+        isIdleMode = true
+        shouldStopIdle = false
+        
+        // Create dedicated queue for IDLE
+        let queueLabel = "com.imapmenu.idle.\(account.id).\(folderConfig.id)"
+        idleQueue = DispatchQueue(label: queueLabel, qos: .utility)
+        
+        idleQueue?.async { [weak self] in
+            self?.runIdleLoop()
+        }
+        
+        debugLog("[EmailManager] [\(folderConfig.name)] IDLE mode started")
+    }
+    
+    /// Stop IDLE mode
+    private func stopIdleMode() {
+        guard isIdleMode else { return }
+        
+        shouldStopIdle = true
+        isIdleMode = false
+        
+        // Stop IDLE on the connection
+        connectionLock.lock()
+        if let connection = idleConnection {
+            try? connection.stopIdle()
+            connection.disconnect()
+        }
+        idleConnection = nil
+        connectionLock.unlock()
+        
+        debugLog("[EmailManager] [\(folderConfig.name)] IDLE mode stopped")
+    }
+    
+    /// Main IDLE loop - runs on dedicated queue
+    private func runIdleLoop() {
+        let imapConfig = IMAPConfig(
+            host: account.host,
+            port: account.port,
+            username: account.username,
+            password: account.password,
+            useSSL: account.useSSL
+        )
+        
+        while !shouldStopIdle {
+            do {
+                // Create dedicated IDLE connection
+                connectionLock.lock()
+                if idleConnection == nil || !idleConnection!.isConnected {
+                    let connection = IMAPConnection(config: imapConfig)
+                    try connection.connect()
+                    idleConnection = connection
+                }
+                let connection = idleConnection!
+                connectionLock.unlock()
+                
+                // Select the folder
+                _ = try connection.selectFolder(folderConfig.folderPath, forceReselect: true)
+                
+                // Start IDLE
+                try connection.startIdle()
+                
+                // Update UI to show we're in real-time mode
+                DispatchQueue.main.async {
+                    self.secondsUntilRefresh = -1  // -1 indicates IDLE mode
+                }
+                
+                // Wait for updates (29 minutes max - RFC recommends re-issuing IDLE before 30 min)
+                // Check every second for notifications or stop signal
+                var idleTime: TimeInterval = 0
+                let maxIdleTime: TimeInterval = 29 * 60  // 29 minutes
+                
+                while !shouldStopIdle && idleTime < maxIdleTime {
+                    if let notification = connection.checkIdleUpdate() {
+                        // Got a notification - fetch new emails
+                        handleIdleNotification(notification)
+                    }
+                    
+                    Thread.sleep(forTimeInterval: 1)
+                    idleTime += 1
+                }
+                
+                // Stop IDLE and restart loop
+                try connection.stopIdle()
+                
+            } catch {
+                debugLog("[EmailManager] [\(folderConfig.name)] IDLE error: \(error)")
+                
+                connectionLock.lock()
+                idleConnection?.disconnect()
+                idleConnection = nil
+                connectionLock.unlock()
+                
+                // Wait before reconnecting
+                if !shouldStopIdle {
+                    Thread.sleep(forTimeInterval: 5)
+                }
+            }
+        }
+    }
+    
+    /// Handle notification received during IDLE
+    private func handleIdleNotification(_ notification: IMAPConnection.IdleNotification) {
+        switch notification {
+        case .exists(let count):
+            debugLog("[EmailManager] [\(folderConfig.name)] IDLE: New message! Total: \(count)")
+            // Fetch new emails
+            DispatchQueue.main.async {
+                self.fetchEmails(forceFullRefresh: false)
+            }
+            
+        case .expunge(let seq):
+            debugLog("[EmailManager] [\(folderConfig.name)] IDLE: Message \(seq) deleted")
+            // Refresh to update list
+            DispatchQueue.main.async {
+                self.fetchEmails(forceFullRefresh: false)
+            }
+            
+        case .recent(let count):
+            debugLog("[EmailManager] [\(folderConfig.name)] IDLE: \(count) recent messages")
+            if count > 0 {
+                DispatchQueue.main.async {
+                    self.fetchEmails(forceFullRefresh: false)
+                }
+            }
+            
+        case .fetch(let seq):
+            debugLog("[EmailManager] [\(folderConfig.name)] IDLE: Flags changed for message \(seq)")
+            // Could refresh just that message's flags, but for simplicity do a delta fetch
+            DispatchQueue.main.async {
+                self.fetchEmails(forceFullRefresh: false)
+            }
+        }
     }
     
     private var cacheKey: String {
@@ -771,6 +954,7 @@ class EmailManager: ObservableObject {
 
     func stopFetching() {
         stopTimers()
+        stopIdleMode()
         invalidateConnection()
     }
 

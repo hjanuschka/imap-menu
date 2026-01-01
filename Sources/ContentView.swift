@@ -63,11 +63,22 @@ struct ContentView: View {
                         .foregroundColor(.secondary)
                 }
 
-                // Countdown timer
-                Text("\(emailManager.secondsUntilRefresh)s")
+                // Countdown timer or IDLE indicator
+                if emailManager.secondsUntilRefresh < 0 {
+                    HStack(spacing: 2) {
+                        Image(systemName: "bolt.fill")
+                            .font(.caption2)
+                        Text("IDLE")
+                    }
                     .font(.caption)
-                    .foregroundColor(.secondary)
-                    .frame(width: 30)
+                    .foregroundColor(.green)
+                    .help("Real-time push notifications active")
+                } else {
+                    Text("\(emailManager.secondsUntilRefresh)s")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .frame(width: 30)
+                }
 
                 // Show fetch progress
                 if !emailManager.fetchProgress.isEmpty {

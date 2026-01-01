@@ -35,6 +35,16 @@ class IMAPConnection {
     private var currentFolder: String?
     private let connectionQueue = DispatchQueue(label: "com.imapmenu.connection")
     
+    // Server capabilities
+    private(set) var capabilities: Set<String> = []
+    var supportsIdle: Bool { capabilities.contains("IDLE") }
+    var supportsCondstore: Bool { capabilities.contains("CONDSTORE") }
+    var supportsQResync: Bool { capabilities.contains("QRESYNC") }
+    
+    // IDLE state
+    private var isIdling = false
+    private var idleTag: String?
+    
     var isConnected: Bool {
         connectionQueue.sync {
             guard _isConnected,
@@ -120,24 +130,74 @@ class IMAPConnection {
     }
 
     private func login() throws {
+        // First get capabilities
+        let capResponse = try sendCommand("CAPABILITY")
+        parseCapabilities(capResponse)
+        
         let response = try sendCommand("LOGIN \"\(config.username)\" \"\(config.password)\"")
         if !response.contains("OK") {
             throw IMAPError.authenticationFailed
+        }
+        
+        // Capabilities may change after login, re-fetch
+        let postLoginCap = try sendCommand("CAPABILITY")
+        parseCapabilities(postLoginCap)
+        
+        // Enable QRESYNC if available (also enables CONDSTORE)
+        if supportsQResync {
+            _ = try? sendCommand("ENABLE QRESYNC")
+            print("[IMAP] Enabled QRESYNC")
+        } else if supportsCondstore {
+            _ = try? sendCommand("ENABLE CONDSTORE")
+            print("[IMAP] Enabled CONDSTORE")
+        }
+        
+        print("[IMAP] Capabilities: IDLE=\(supportsIdle), CONDSTORE=\(supportsCondstore), QRESYNC=\(supportsQResync)")
+    }
+    
+    private func parseCapabilities(_ response: String) {
+        // Parse CAPABILITY response: * CAPABILITY IMAP4rev1 IDLE CONDSTORE ...
+        for line in response.components(separatedBy: "\r\n") {
+            if line.contains("CAPABILITY") {
+                let caps = line.uppercased()
+                    .replacingOccurrences(of: "* CAPABILITY", with: "")
+                    .components(separatedBy: " ")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                capabilities = Set(caps)
+            }
         }
     }
     
     // MARK: - Optimized Folder Selection
     
-    func selectFolder(_ folder: String) throws {
-        // Skip if already selected
-        if currentFolder == folder {
+    /// Result of SELECT command with CONDSTORE info
+    struct SelectResult {
+        var exists: Int = 0
+        var recent: Int = 0
+        var uidValidity: UInt32 = 0
+        var uidNext: UInt32 = 0
+        var highestModSeq: UInt64 = 0
+    }
+    
+    @discardableResult
+    func selectFolder(_ folder: String, forceReselect: Bool = false) throws -> SelectResult {
+        // Skip if already selected (unless forced)
+        if !forceReselect && currentFolder == folder {
             print("[IMAP] Folder '\(folder)' already selected, skipping SELECT")
-            return
+            return SelectResult()
         }
         
         let encodedFolder = encodeModifiedUTF7(folder)
-        let selectResponse = try sendCommand("SELECT \"\(encodedFolder)\"")
         
+        // Use CONDSTORE modifier if available
+        let selectCmd = supportsCondstore ? 
+            "SELECT \"\(encodedFolder)\" (CONDSTORE)" : 
+            "SELECT \"\(encodedFolder)\""
+        
+        let selectResponse = try sendCommand(selectCmd)
+        
+        var result = SelectResult()
         let lines = selectResponse.components(separatedBy: "\r\n")
         for line in lines {
             if line.contains(" NO ") || line.contains(" BAD ") {
@@ -145,12 +205,347 @@ class IMAPConnection {
                     throw IMAPError.folderNotFound(folder)
                 }
             }
+            
+            // Parse EXISTS
+            if line.contains("EXISTS") {
+                if let match = line.range(of: #"\d+ EXISTS"#, options: .regularExpression) {
+                    let numStr = line[match].replacingOccurrences(of: " EXISTS", with: "")
+                    result.exists = Int(numStr) ?? 0
+                }
+            }
+            
+            // Parse RECENT
+            if line.contains("RECENT") {
+                if let match = line.range(of: #"\d+ RECENT"#, options: .regularExpression) {
+                    let numStr = line[match].replacingOccurrences(of: " RECENT", with: "")
+                    result.recent = Int(numStr) ?? 0
+                }
+            }
+            
+            // Parse UIDVALIDITY
+            if line.contains("UIDVALIDITY") {
+                if let match = line.range(of: #"UIDVALIDITY \d+"#, options: .regularExpression) {
+                    let numStr = line[match].replacingOccurrences(of: "UIDVALIDITY ", with: "")
+                    result.uidValidity = UInt32(numStr) ?? 0
+                }
+            }
+            
+            // Parse UIDNEXT
+            if line.contains("UIDNEXT") {
+                if let match = line.range(of: #"UIDNEXT \d+"#, options: .regularExpression) {
+                    let numStr = line[match].replacingOccurrences(of: "UIDNEXT ", with: "")
+                    result.uidNext = UInt32(numStr) ?? 0
+                }
+            }
+            
+            // Parse HIGHESTMODSEQ (CONDSTORE)
+            if line.contains("HIGHESTMODSEQ") {
+                if let match = line.range(of: #"HIGHESTMODSEQ \d+"#, options: .regularExpression) {
+                    let numStr = line[match].replacingOccurrences(of: "HIGHESTMODSEQ ", with: "")
+                    result.highestModSeq = UInt64(numStr) ?? 0
+                }
+            }
         }
         
         currentFolder = folder
+        print("[IMAP] Selected '\(folder)': exists=\(result.exists), uidNext=\(result.uidNext), modSeq=\(result.highestModSeq)")
+        return result
+    }
+    
+    // MARK: - IMAP IDLE Support
+    
+    /// Start IDLE mode - call this after selecting a folder
+    /// Returns immediately after sending IDLE command
+    func startIdle() throws {
+        guard supportsIdle else {
+            throw IMAPError.invalidResponse("Server does not support IDLE")
+        }
+        guard currentFolder != nil else {
+            throw IMAPError.invalidResponse("Must select a folder before IDLE")
+        }
+        guard !isIdling else {
+            print("[IMAP] Already in IDLE mode")
+            return
+        }
+        
+        let tag = nextTag()
+        idleTag = tag
+        let command = "\(tag) IDLE\r\n"
+        
+        guard let data = command.data(using: .utf8),
+              let outputStream = outputStream else {
+            throw IMAPError.connectionFailed("Stream not available")
+        }
+        
+        let bytesWritten = data.withUnsafeBytes { buffer in
+            outputStream.write(buffer.bindMemory(to: UInt8.self).baseAddress!, maxLength: data.count)
+        }
+        
+        if bytesWritten < 0 {
+            throw IMAPError.connectionFailed("Failed to write IDLE command")
+        }
+        
+        // Wait for continuation response "+ idling"
+        let response = try readIdleResponse(timeout: 5)
+        if response.contains("+") {
+            isIdling = true
+            print("[IMAP] IDLE mode started")
+        } else {
+            throw IMAPError.invalidResponse("IDLE failed: \(response)")
+        }
+    }
+    
+    /// Stop IDLE mode by sending DONE
+    func stopIdle() throws {
+        guard isIdling else {
+            return
+        }
+        
+        let command = "DONE\r\n"
+        guard let data = command.data(using: .utf8),
+              let outputStream = outputStream else {
+            throw IMAPError.connectionFailed("Stream not available")
+        }
+        
+        let bytesWritten = data.withUnsafeBytes { buffer in
+            outputStream.write(buffer.bindMemory(to: UInt8.self).baseAddress!, maxLength: data.count)
+        }
+        
+        if bytesWritten < 0 {
+            throw IMAPError.connectionFailed("Failed to write DONE")
+        }
+        
+        // Wait for tagged response
+        if let tag = idleTag {
+            _ = try? readResponse(untilTag: tag)
+        }
+        
+        isIdling = false
+        idleTag = nil
+        print("[IMAP] IDLE mode stopped")
+    }
+    
+    /// Check if there are any updates during IDLE (non-blocking)
+    /// Returns notification type if something changed, nil if no update
+    func checkIdleUpdate() -> IdleNotification? {
+        guard isIdling, let inputStream = inputStream else {
+            return nil
+        }
+        
+        // Check if there's data available without blocking
+        guard inputStream.hasBytesAvailable else {
+            return nil
+        }
+        
+        // Read available data
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        let bytesRead = inputStream.read(&buffer, maxLength: buffer.count)
+        
+        guard bytesRead > 0 else {
+            return nil
+        }
+        
+        let response = String(bytes: buffer[0..<bytesRead], encoding: .utf8) ?? ""
+        return parseIdleNotification(response)
+    }
+    
+    /// Wait for IDLE notification with timeout
+    /// Returns notification type or nil on timeout
+    func waitForIdleUpdate(timeout: TimeInterval) -> IdleNotification? {
+        guard isIdling else {
+            return nil
+        }
+        
+        do {
+            let response = try readIdleResponse(timeout: timeout)
+            return parseIdleNotification(response)
+        } catch {
+            return nil
+        }
+    }
+    
+    enum IdleNotification {
+        case exists(Int)       // New message count
+        case expunge(Int)      // Message deleted
+        case recent(Int)       // New recent messages
+        case fetch(Int)        // Flags changed
+    }
+    
+    private func parseIdleNotification(_ response: String) -> IdleNotification? {
+        let lines = response.components(separatedBy: "\r\n")
+        for line in lines {
+            // * 42 EXISTS - new message arrived
+            if line.contains("EXISTS") {
+                if let match = line.range(of: #"\* (\d+) EXISTS"#, options: .regularExpression) {
+                    let numStr = line[match].replacingOccurrences(of: "* ", with: "")
+                        .replacingOccurrences(of: " EXISTS", with: "")
+                    if let count = Int(numStr) {
+                        print("[IMAP] IDLE: EXISTS \(count)")
+                        return .exists(count)
+                    }
+                }
+            }
+            
+            // * 5 EXPUNGE - message removed
+            if line.contains("EXPUNGE") {
+                if let match = line.range(of: #"\* (\d+) EXPUNGE"#, options: .regularExpression) {
+                    let numStr = line[match].replacingOccurrences(of: "* ", with: "")
+                        .replacingOccurrences(of: " EXPUNGE", with: "")
+                    if let seq = Int(numStr) {
+                        print("[IMAP] IDLE: EXPUNGE \(seq)")
+                        return .expunge(seq)
+                    }
+                }
+            }
+            
+            // * 3 RECENT
+            if line.contains("RECENT") && line.hasPrefix("*") {
+                if let match = line.range(of: #"\* (\d+) RECENT"#, options: .regularExpression) {
+                    let numStr = line[match].replacingOccurrences(of: "* ", with: "")
+                        .replacingOccurrences(of: " RECENT", with: "")
+                    if let count = Int(numStr) {
+                        print("[IMAP] IDLE: RECENT \(count)")
+                        return .recent(count)
+                    }
+                }
+            }
+            
+            // * 42 FETCH (FLAGS ...)
+            if line.contains("FETCH") && line.hasPrefix("*") {
+                if let match = line.range(of: #"\* (\d+) FETCH"#, options: .regularExpression) {
+                    let numStr = line[match].replacingOccurrences(of: "* ", with: "")
+                        .replacingOccurrences(of: " FETCH", with: "")
+                    if let seq = Int(numStr) {
+                        print("[IMAP] IDLE: FETCH \(seq)")
+                        return .fetch(seq)
+                    }
+                }
+            }
+        }
+        return nil
+    }
+    
+    private func readIdleResponse(timeout: TimeInterval) throws -> String {
+        guard let inputStream = inputStream else {
+            throw IMAPError.connectionFailed("Stream not available")
+        }
+        
+        var responseData = Data()
+        var buffer = [UInt8](repeating: 0, count: 1024)
+        let startTime = Date()
+        
+        while Date().timeIntervalSince(startTime) < timeout {
+            if inputStream.hasBytesAvailable {
+                let bytesRead = inputStream.read(&buffer, maxLength: buffer.count)
+                if bytesRead > 0 {
+                    responseData.append(contentsOf: buffer[0..<bytesRead])
+                    // Check if we have a complete response
+                    if let str = String(data: responseData, encoding: .utf8),
+                       str.contains("\r\n") {
+                        return str
+                    }
+                } else if bytesRead < 0 {
+                    throw IMAPError.connectionFailed("Read error")
+                }
+            } else {
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+        }
+        
+        throw IMAPError.timeout
+    }
+    
+    // MARK: - CONDSTORE/QRESYNC Methods
+    
+    /// Fetch only emails that changed since a given MODSEQ
+    func fetchChangedSince(folder: String, modSeq: UInt64, limit: Int = 100) throws -> (emails: [Email], deletedUIDs: [UInt32], newModSeq: UInt64) {
+        guard supportsCondstore else {
+            throw IMAPError.invalidResponse("Server does not support CONDSTORE")
+        }
+        
+        let selectResult = try selectFolder(folder, forceReselect: true)
+        
+        // Use SEARCH MODSEQ to find changed messages
+        let searchResponse = try sendCommand("UID SEARCH MODSEQ \(modSeq)")
+        
+        var changedUIDs: [UInt32] = []
+        for line in searchResponse.components(separatedBy: "\r\n") {
+            if line.hasPrefix("* SEARCH") {
+                let parts = line.replacingOccurrences(of: "* SEARCH", with: "")
+                    .trimmingCharacters(in: .whitespaces)
+                    .split(separator: " ")
+                for part in parts {
+                    // Skip the MODSEQ part if present in output
+                    if let uid = UInt32(part) {
+                        changedUIDs.append(uid)
+                    }
+                }
+            }
+        }
+        
+        // Limit the UIDs
+        let uidsToFetch = Array(changedUIDs.suffix(limit))
+        
+        var emails: [Email] = []
+        if !uidsToFetch.isEmpty {
+            let uidSet = uidsToFetch.map { String($0) }.joined(separator: ",")
+            emails = try fetchEmailsByUIDs(folder: folder, uids: uidSet)
+        }
+        
+        print("[IMAP] CONDSTORE: \(changedUIDs.count) messages changed since modSeq \(modSeq)")
+        
+        return (emails: emails, deletedUIDs: [], newModSeq: selectResult.highestModSeq)
+    }
+    
+    /// Fetch flag changes since MODSEQ (lighter than full fetch)
+    func fetchFlagChanges(folder: String, modSeq: UInt64) throws -> [(uid: UInt32, flags: [String])] {
+        guard supportsCondstore else {
+            return []
+        }
+        
+        _ = try selectFolder(folder)
+        
+        // FETCH all messages but only FLAGS, with CHANGEDSINCE
+        let response = try sendCommand("UID FETCH 1:* (UID FLAGS) (CHANGEDSINCE \(modSeq))")
+        
+        var changes: [(uid: UInt32, flags: [String])] = []
+        
+        for line in response.components(separatedBy: "\r\n") {
+            if line.contains("FETCH") && line.contains("FLAGS") {
+                // Parse: * 5 FETCH (UID 123 FLAGS (\Seen \Flagged))
+                var uid: UInt32 = 0
+                var flags: [String] = []
+                
+                if let uidMatch = line.range(of: #"UID (\d+)"#, options: .regularExpression) {
+                    let uidStr = line[uidMatch].replacingOccurrences(of: "UID ", with: "")
+                    uid = UInt32(uidStr) ?? 0
+                }
+                
+                if let flagsMatch = line.range(of: #"FLAGS \([^)]*\)"#, options: .regularExpression) {
+                    let flagsStr = line[flagsMatch]
+                        .replacingOccurrences(of: "FLAGS (", with: "")
+                        .replacingOccurrences(of: ")", with: "")
+                    flags = flagsStr.components(separatedBy: " ").filter { !$0.isEmpty }
+                }
+                
+                if uid > 0 {
+                    changes.append((uid: uid, flags: flags))
+                }
+            }
+        }
+        
+        print("[IMAP] CONDSTORE: \(changes.count) flag changes since modSeq \(modSeq)")
+        return changes
     }
 
     // MARK: - Delta Fetch (fetch only new emails since UID)
+    
+    /// Fetch emails by a comma-separated list of UIDs
+    func fetchEmailsByUIDs(folder: String, uids: String) throws -> [Email] {
+        try selectFolder(folder)
+        let fetchResponse = try sendCommand("UID FETCH \(uids) (UID FLAGS BODY.PEEK[HEADER])")
+        return parseEmailsHeadersOnly(from: fetchResponse)
+    }
     
     func fetchEmailsSince(folder: String, sinceUID: UInt32, limit: Int) throws -> [Email] {
         let fetchStart = Date()
