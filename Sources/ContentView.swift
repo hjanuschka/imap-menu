@@ -25,26 +25,26 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header with vibrancy
-            headerView
-            
-            Divider()
-                .opacity(0.5)
-            
             // Content
             if selectedEmail != nil {
                 EmailDetailView(email: selectedEmail!, emailManager: emailManager, selectedEmail: $selectedEmail)
             } else {
+                // Header (only show in list view)
+                headerView
+                
+                Divider()
+                    .opacity(0.3)
+                
                 emailListView
             }
             
             Divider()
-                .opacity(0.5)
+                .opacity(0.3)
             
             // Footer
             footerView
         }
-        .background(VisualEffectBlur(material: .popover, blendingMode: .behindWindow))
+        .background(VisualEffectBlur(material: .hudWindow, blendingMode: .behindWindow))
         .sheet(isPresented: $showingSettings) {
             SettingsView()
         }
@@ -230,45 +230,49 @@ struct EmailRowView: View {
     @State private var isHovered = false
     
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: 8) {
             // Unread indicator
             Circle()
                 .fill(email.isRead ? Color.clear : Color.blue)
                 .frame(width: 8, height: 8)
-                .padding(.top, 6)
+                .padding(.top, 5)
             
             // Email content
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 // From and date row
-                HStack {
+                HStack(alignment: .firstTextBaseline) {
                     Text(email.fromName.isEmpty ? email.from : email.fromName)
-                        .font(.system(size: 12, weight: email.isRead ? .regular : .semibold))
+                        .font(.system(size: 13, weight: email.isRead ? .regular : .semibold))
                         .foregroundColor(.primary)
                         .lineLimit(1)
                     
                     Spacer()
                     
                     Text(formatDate(email.date))
-                        .font(.system(size: 10))
+                        .font(.system(size: 11))
                         .foregroundColor(.secondary)
                 }
                 
                 // Subject
                 Text(email.subject)
-                    .font(.system(size: 12, weight: email.isRead ? .regular : .medium))
-                    .foregroundColor(email.isRead ? .secondary : .primary)
+                    .font(.system(size: 12))
+                    .foregroundColor(email.isRead ? .primary.opacity(0.8) : .primary)
                     .lineLimit(1)
                 
-                // Preview
-                Text(email.preview)
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
+                // Preview - always show
+                if !email.preview.isEmpty {
+                    Text(email.preview)
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                }
             }
+            
+            Spacer(minLength: 0)
             
             // Action buttons (show on hover)
             if isHovered {
-                HStack(spacing: 6) {
+                HStack(spacing: 4) {
                     actionButton(
                         icon: email.isRead ? "envelope.badge" : "envelope.open",
                         color: email.isRead ? .orange : .blue
@@ -283,13 +287,13 @@ struct EmailRowView: View {
                 .transition(.opacity)
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
         .background(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: 6)
                 .fill(backgroundColor)
         )
-        .padding(.horizontal, 6)
+        .padding(.horizontal, 4)
         .contentShape(Rectangle())
         .onTapGesture { onSelect() }
         .onHover { hovering in
@@ -311,9 +315,9 @@ struct EmailRowView: View {
     
     private var backgroundColor: Color {
         if isSelected {
-            return Color.accentColor.opacity(0.15)
+            return Color.accentColor.opacity(0.2)
         } else if isHovered {
-            return Color.primary.opacity(0.05)
+            return Color.primary.opacity(0.06)
         }
         return Color.clear
     }
@@ -321,10 +325,10 @@ struct EmailRowView: View {
     private func actionButton(icon: String, color: Color, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 11))
+                .font(.system(size: 10))
                 .foregroundColor(color)
-                .frame(width: 22, height: 22)
-                .background(Circle().fill(Color.primary.opacity(0.08)))
+                .frame(width: 20, height: 20)
+                .background(Circle().fill(Color.primary.opacity(0.1)))
         }
         .buttonStyle(.plain)
     }
@@ -380,18 +384,23 @@ struct EmailDetailView: View {
             detailHeader
             
             Divider()
-                .opacity(0.5)
+                .opacity(0.3)
             
-            // Email header info
-            emailHeader
-            
-            Divider()
-                .opacity(0.5)
-            
-            // Email content
-            emailContent
+            // Scrollable content
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    // Email header info
+                    emailHeader
+                    
+                    Divider()
+                        .opacity(0.3)
+                        .padding(.horizontal, 14)
+                    
+                    // Email content
+                    emailContent
+                }
+            }
         }
-        .background(VisualEffectBlur(material: .popover, blendingMode: .behindWindow))
         .onAppear {
             loadEmailBody()
             startMarkAsReadTimer()
@@ -547,8 +556,11 @@ struct EmailDetailView: View {
                 .frame(height: 200)
             } else {
                 WebViewRepresentable(html: fullBodyHTML)
+                    .frame(minHeight: 300)
             }
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
     }
     
     // MARK: - Helper Methods
@@ -589,22 +601,27 @@ struct EmailDetailView: View {
         let parser = MIMEParser(body: email.body, contentType: email.contentType, boundary: email.boundary)
         var html = parser.getHTMLContent()
         
-        // Inject modern styling
+        // Inject modern styling with transparent background
         let style = """
         <style>
             * { box-sizing: border-box; }
-            body {
+            html, body {
                 font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
                 font-size: 13px;
-                line-height: 1.5;
-                color: #1d1d1f;
+                line-height: 1.6;
+                color: #333;
                 padding: 0;
                 margin: 0;
-                background: transparent;
+                background: transparent !important;
+                -webkit-font-smoothing: antialiased;
             }
             @media (prefers-color-scheme: dark) {
-                body { color: #f5f5f7; }
-                a { color: #6eb5ff; }
+                html, body { color: #e5e5e7 !important; }
+                a { color: #6eb5ff !important; }
+                pre, code { background: rgba(255,255,255,0.08) !important; }
+                blockquote { border-left-color: rgba(255,255,255,0.2) !important; color: #aaa !important; }
+                table { border-color: rgba(255,255,255,0.1) !important; }
+                td, th { border-color: rgba(255,255,255,0.1) !important; }
             }
             img { max-width: 100%; height: auto; }
             pre, code {
@@ -612,9 +629,9 @@ struct EmailDetailView: View {
                 font-size: 12px;
                 background: rgba(128,128,128,0.1);
                 border-radius: 4px;
-                padding: 2px 4px;
+                padding: 2px 6px;
             }
-            pre { padding: 12px; overflow-x: auto; }
+            pre { padding: 12px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; }
             blockquote {
                 margin: 8px 0;
                 padding-left: 12px;
@@ -623,6 +640,11 @@ struct EmailDetailView: View {
             }
             a { color: #0071e3; text-decoration: none; }
             a:hover { text-decoration: underline; }
+            table { border-collapse: collapse; }
+            td, th { padding: 4px 8px; }
+            hr { border: none; border-top: 1px solid rgba(128,128,128,0.2); margin: 16px 0; }
+            /* Reset common email backgrounds */
+            div, table, tr, td, th { background: transparent !important; }
         </style>
         """
         
