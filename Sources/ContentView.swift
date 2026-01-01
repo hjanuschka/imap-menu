@@ -9,6 +9,7 @@ struct ContentView: View {
     @State private var showingSettings = false
     @State private var searchText = ""
     @State private var isSearching = false
+    @State private var composeWindowController: ComposeWindowController?
     
     private var filteredEmails: [Email] {
         if searchText.isEmpty {
@@ -69,6 +70,17 @@ struct ContentView: View {
                         .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
+                
+                // Compose button (if SMTP configured)
+                if emailManager.account.hasSmtpConfigured {
+                    Button(action: { openCompose() }) {
+                        Image(systemName: "square.and.pencil")
+                            .font(.system(size: 12))
+                            .foregroundColor(.accentColor)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Compose new email")
+                }
                 
                 Spacer()
                 
@@ -136,6 +148,16 @@ struct ContentView: View {
                     .foregroundColor(.secondary)
             }
         }
+    }
+    
+    // MARK: - Compose
+    
+    private func openCompose() {
+        let controller = ComposeWindowController()
+        controller.showCompose(account: emailManager.account, mode: .new) {
+            debugLog("[Compose] Email sent successfully")
+        }
+        composeWindowController = controller
     }
     
     // MARK: - Email List View

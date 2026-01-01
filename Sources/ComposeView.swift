@@ -298,27 +298,13 @@ private func buildQuotedReply(email: Email, signature: String) -> String {
 }
 
 private func extractPlainTextFromEmail(_ email: Email) -> String {
-    // If we have the body, parse it
+    // If we have the body, use MIMEParser to get plain text
     if !email.body.isEmpty {
-        // Try to extract plain text from the body
         let parser = MIMEParser(body: email.body, contentType: email.contentType, boundary: email.boundary)
-        let html = parser.getHTMLContent()
-
-        // Strip HTML tags for plain text reply
-        let stripped = html
-            .replacingOccurrences(of: "<br>", with: "\n")
-            .replacingOccurrences(of: "<br/>", with: "\n")
-            .replacingOccurrences(of: "<br />", with: "\n")
-            .replacingOccurrences(of: "</p>", with: "\n")
-            .replacingOccurrences(of: "</div>", with: "\n")
-            .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-            .replacingOccurrences(of: "&nbsp;", with: " ")
-            .replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-
-        return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
+        let plainText = parser.getPlainTextContent()
+        if !plainText.isEmpty {
+            return plainText
+        }
     }
 
     // Fallback to preview

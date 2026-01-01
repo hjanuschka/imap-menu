@@ -295,6 +295,88 @@ class MIMEParser {
             return wrapped
         }
     }
+    
+    /// Get plain text content - prefers text/plain part, falls back to stripping HTML
+    func getPlainTextContent() -> String {
+        var effectiveBoundary = boundary
+        if effectiveBoundary.isEmpty {
+            effectiveBoundary = findBoundaryInBody()
+        }
+
+        if !effectiveBoundary.isEmpty && body.contains("--" + effectiveBoundary) {
+            if let plainText = extractPlainTextPart(boundary: effectiveBoundary) {
+                return plainText
+            }
+        }
+
+        // If no multipart or no text/plain part, check if body itself is plain text
+        if !contentType.lowercased().contains("text/html") {
+            let decoded = decodeContent(body, headers: "Content-Type: \(contentType)")
+            return decoded.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        
+        // Last resort: strip HTML (but this is not ideal)
+        return stripHTML(from: body)
+    }
+    
+    private func extractPlainTextPart(boundary: String) -> String? {
+        let separator = "--" + boundary
+        let parts = body.components(separatedBy: separator)
+        
+        for part in parts {
+            guard let headerEnd = part.range(of: "\r\n\r\n") ?? part.range(of: "\n\n") else {
+                continue
+            }
+            
+            let headers = String(part[..<headerEnd.lowerBound])
+            let content = String(part[headerEnd.upperBound...])
+            let headersLower = headers.lowercased()
+            
+            // Look for text/plain part
+            if headersLower.contains("text/plain") {
+                let decoded = decodeContent(content, headers: headers)
+                let trimmed = decoded.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    return trimmed
+                }
+            }
+            
+            // Check nested multipart
+            if headersLower.contains("multipart/") {
+                if let nestedBoundary = extractBoundary(from: headers) {
+                    let nestedParser = MIMEParser(body: content, contentType: headers, boundary: nestedBoundary)
+                    if let nested = nestedParser.extractPlainTextPart(boundary: nestedBoundary) {
+                        return nested
+                    }
+                }
+            }
+        }
+        
+        return nil
+    }
+    
+    private func stripHTML(from html: String) -> String {
+        var text = html
+        // Remove style/script blocks
+        text = text.replacingOccurrences(of: "<style[^>]*>[\\s\\S]*?</style>", with: "", options: .regularExpression)
+        text = text.replacingOccurrences(of: "<script[^>]*>[\\s\\S]*?</script>", with: "", options: .regularExpression)
+        text = text.replacingOccurrences(of: "<head[^>]*>[\\s\\S]*?</head>", with: "", options: .regularExpression)
+        // Convert breaks
+        text = text.replacingOccurrences(of: "<br[^>]*>", with: "\n", options: .regularExpression)
+        text = text.replacingOccurrences(of: "</p>", with: "\n\n")
+        text = text.replacingOccurrences(of: "</div>", with: "\n")
+        // Remove tags
+        text = text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        // Decode entities
+        text = text.replacingOccurrences(of: "&nbsp;", with: " ")
+        text = text.replacingOccurrences(of: "&amp;", with: "&")
+        text = text.replacingOccurrences(of: "&lt;", with: "<")
+        text = text.replacingOccurrences(of: "&gt;", with: ">")
+        text = text.replacingOccurrences(of: "&quot;", with: "\"")
+        // Clean whitespace
+        text = text.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     private func findBoundaryInBody() -> String {
         let pattern = #"--([a-zA-Z0-9_=\-]+)\r?\n"#
