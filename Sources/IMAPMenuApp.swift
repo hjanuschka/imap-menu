@@ -105,7 +105,8 @@ class FolderMenuItem {
         
         // Set bounds to vertically center the icon in the menu bar
         if let image = finalImage {
-            let yOffset = (22 - image.size.height) / 2 - 3  // Adjust for baseline
+            // yOffset adjusts for text baseline - negative moves icon up
+            let yOffset: CGFloat = -2
             iconAttachment.bounds = CGRect(x: 0, y: yOffset, width: image.size.width, height: image.size.height)
         }
 

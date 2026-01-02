@@ -717,11 +717,32 @@ struct WebViewRepresentable: NSViewRepresentable {
         
         let webView = WKWebView(frame: .zero, configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
+        webView.navigationDelegate = context.coordinator
         return webView
     }
     
     func updateNSView(_ webView: WKWebView, context: Context) {
         webView.loadHTMLString(html, baseURL: nil)
+    }
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+    
+    class Coordinator: NSObject, WKNavigationDelegate {
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            // Allow initial HTML load
+            if navigationAction.navigationType == .other {
+                decisionHandler(.allow)
+                return
+            }
+            
+            // Open links in system browser
+            if let url = navigationAction.request.url {
+                NSWorkspace.shared.open(url)
+            }
+            decisionHandler(.cancel)
+        }
     }
 }
 

@@ -564,7 +564,7 @@ class IMAPConnection {
     /// Fetch emails by a comma-separated list of UIDs
     func fetchEmailsByUIDs(folder: String, uids: String) throws -> [Email] {
         try selectFolder(folder)
-        let fetchResponse = try sendCommand("UID FETCH \(uids) (UID FLAGS BODY.PEEK[HEADER])")
+        let fetchResponse = try sendCommand("UID FETCH \(uids) (UID FLAGS INTERNALDATE BODY.PEEK[HEADER])")
         return parseEmailsHeadersOnly(from: fetchResponse)
     }
     
@@ -599,10 +599,20 @@ class IMAPConnection {
         let uidList = recentUIDs.map { String($0) }.joined(separator: ",")
         print("[IMAP] Delta fetch: \(recentUIDs.count) new emails (UIDs: \(uidList.prefix(50))...)")
         
-        let fetchResponse = try sendCommand("UID FETCH \(uidList) (UID FLAGS BODY.PEEK[HEADER])")
+        let fetchResponse = try sendCommand("UID FETCH \(uidList) (UID FLAGS INTERNALDATE BODY.PEEK[HEADER])")
+        
+        // Debug: show response length
+        print("[IMAP] Delta fetch response length: \(fetchResponse.count) chars")
+        if fetchResponse.count < 2000 {
+            print("[IMAP] Delta fetch response: \(fetchResponse)")
+        }
         
         let emails = parseEmailsHeadersOnly(from: fetchResponse)
-        print("[IMAP] Delta fetch completed in \(Date().timeIntervalSince(fetchStart))s")
+        print("[IMAP] Delta fetch completed in \(Date().timeIntervalSince(fetchStart))s, parsed \(emails.count) emails")
+        
+        for email in emails {
+            print("[IMAP] Delta email: UID=\(email.uid), from='\(email.from)', subject='\(email.subject.prefix(50))'")
+        }
         
         return emails
     }
@@ -1183,6 +1193,11 @@ class IMAPConnection {
         if let uidMatch = block.range(of: #"UID (\d+)"#, options: .regularExpression) {
             let uidStr = String(block[uidMatch]).replacingOccurrences(of: "UID ", with: "")
             uid = UInt32(uidStr) ?? 0
+        }
+        
+        // Debug: log first 500 chars of block for troubleshooting
+        if block.contains("Unknown") || uid > 0 {
+            print("[IMAP DEBUG] Parsing block for UID \(uid): \(block.prefix(500))")
         }
 
         var isRead = false
