@@ -187,7 +187,8 @@ class EmailCache {
     }
     
     func mergeNewEmails(_ newEmails: [Email], for folderPath: String, maxEmails: Int = 0) -> [Email] {
-        cacheQueue.sync {
+        // Use barrier to ensure we wait for any pending removes to complete
+        return cacheQueue.sync(flags: .barrier) {
             var existing = cache[folderPath] ?? []
             let existingUIDs = Set(existing.map { $0.uid })
             
@@ -203,6 +204,9 @@ class EmailCache {
             if existing.count > effectiveLimit {
                 existing = Array(existing.prefix(effectiveLimit))
             }
+            
+            // Update the cache with merged result
+            cache[folderPath] = existing
             
             return existing
         }
@@ -221,10 +225,11 @@ class EmailCache {
     }
     
     func removeEmail(uid: UInt32, from folderPath: String) {
-        cacheQueue.async(flags: .barrier) {
+        cacheQueue.sync(flags: .barrier) {
             self.cache[folderPath]?.removeAll { $0.uid == uid }
             // Persist the change to disk
             self.saveToDisk(folderPath: folderPath)
+            print("[Cache] Removed UID \(uid) from \(folderPath), remaining: \(self.cache[folderPath]?.count ?? 0)")
         }
     }
     
@@ -1388,11 +1393,15 @@ class EmailManager: ObservableObject {
     func deleteEmail(_ email: Email) {
         guard !account.host.isEmpty else { return }
 
-        debugLog("[EmailManager] [\(folderConfig.name)] deleteEmail: uid=\(email.uid)")
+        let beforeCount = emails.count
+        let beforeUnread = emails.filter { !$0.isRead }.count
+        debugLog("[EmailManager] [\(folderConfig.name)] deleteEmail: uid=\(email.uid), before: \(beforeCount) emails, \(beforeUnread) unread")
         
         emails.removeAll { $0.id == email.id }
         unreadCount = emails.filter { !$0.isRead }.count
         cache.removeEmail(uid: email.uid, from: cacheKey)
+        
+        debugLog("[EmailManager] [\(folderConfig.name)] deleteEmail: after: \(emails.count) emails, \(unreadCount) unread")
 
         fetchQueue.async { [weak self] in
             guard let self = self else { return }

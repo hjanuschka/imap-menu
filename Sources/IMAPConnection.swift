@@ -601,11 +601,9 @@ class IMAPConnection {
         
         let fetchResponse = try sendCommand("UID FETCH \(uidList) (UID FLAGS INTERNALDATE BODY.PEEK[HEADER])")
         
-        // Debug: show response length
+        // Debug: show response 
         print("[IMAP] Delta fetch response length: \(fetchResponse.count) chars")
-        if fetchResponse.count < 2000 {
-            print("[IMAP] Delta fetch response: \(fetchResponse)")
-        }
+        print("[IMAP] Delta fetch response (first 3000): \(fetchResponse.prefix(3000))")
         
         let emails = parseEmailsHeadersOnly(from: fetchResponse)
         print("[IMAP] Delta fetch completed in \(Date().timeIntervalSince(fetchStart))s, parsed \(emails.count) emails")
@@ -932,14 +930,18 @@ class IMAPConnection {
 
     func deleteEmail(folder: String, uid: UInt32) throws {
         try selectFolder(folder)
+        print("[IMAP] Deleting email UID \(uid) from \(folder)")
         let response = try sendCommand("UID STORE \(uid) +FLAGS (\\Deleted)")
+        print("[IMAP] STORE response: \(response.prefix(200))")
         if response.contains(" NO ") || response.contains(" BAD ") {
             throw IMAPError.fetchFailed("Failed to delete email")
         }
         let expungeResponse = try sendCommand("EXPUNGE")
+        print("[IMAP] EXPUNGE response: \(expungeResponse.prefix(200))")
         if expungeResponse.contains(" NO ") || expungeResponse.contains(" BAD ") {
             throw IMAPError.fetchFailed("Failed to expunge deleted email")
         }
+        print("[IMAP] Delete completed for UID \(uid)")
     }
 
     func fetchFullMessage(folder: String, uid: UInt32) throws -> String {

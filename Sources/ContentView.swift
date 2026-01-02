@@ -285,7 +285,10 @@ struct EmailRowView: View {
                     }
                     
                     actionButton(icon: "trash", color: .red) {
-                        emailManager.deleteEmail(email)
+                        // Get current email from manager to ensure we have the right reference
+                        if let currentEmail = emailManager.emails.first(where: { $0.uid == email.uid }) {
+                            emailManager.deleteEmail(currentEmail)
+                        }
                     }
                 }
                 .transition(.opacity)
