@@ -564,7 +564,7 @@ class IMAPConnection {
     /// Fetch emails by a comma-separated list of UIDs
     func fetchEmailsByUIDs(folder: String, uids: String) throws -> [Email] {
         try selectFolder(folder)
-        let fetchResponse = try sendCommand("UID FETCH \(uids) (UID FLAGS INTERNALDATE BODY.PEEK[HEADER])")
+        let fetchResponse = try sendCommand("UID FETCH \(uids) (UID FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID CONTENT-TYPE)])")
         return parseEmailsHeadersOnly(from: fetchResponse)
     }
     
@@ -599,7 +599,7 @@ class IMAPConnection {
         let uidList = recentUIDs.map { String($0) }.joined(separator: ",")
         print("[IMAP] Delta fetch: \(recentUIDs.count) new emails (UIDs: \(uidList.prefix(50))...)")
         
-        let fetchResponse = try sendCommand("UID FETCH \(uidList) (UID FLAGS INTERNALDATE BODY.PEEK[HEADER])")
+        let fetchResponse = try sendCommand("UID FETCH \(uidList) (UID FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE MESSAGE-ID CONTENT-TYPE)])")
         
         // Debug: show response 
         print("[IMAP] Delta fetch response length: \(fetchResponse.count) chars")
@@ -1226,10 +1226,15 @@ class IMAPConnection {
         var contentType = "text/plain"
         var boundary = ""
 
-        // Handle both BODY[HEADER] and BODY[HEADER.FIELDS (...)]
+        // Handle BODY[HEADER], BODY[HEADER.FIELDS (...)], and BODY.PEEK variants
+        // Server response drops the .PEEK part
         var headerMarker: Range<String.Index>? = block.range(of: "BODY[HEADER.FIELDS")
         if headerMarker == nil {
             headerMarker = block.range(of: "BODY[HEADER]")
+        }
+        
+        if headerMarker == nil {
+            print("[IMAP DEBUG] No header marker found in block! Block preview: \(block.prefix(300))")
         }
 
         if let marker = headerMarker {
