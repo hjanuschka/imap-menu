@@ -521,6 +521,13 @@ struct IMAPAccount: Codable, Identifiable, Equatable, Hashable {
         self.signature = signature
     }
 
+    enum CodingKeys: String, CodingKey {
+        case id, name, accountType, host, port, username, password, useSSL, folders
+        case oauth2ClientId, oauth2ClientSecret
+        case smtpHost, smtpPort, smtpUseSSL, smtpUsername, smtpPassword
+        case fromEmail, fromName, signature
+    }
+    
     // Custom decoder for backward compatibility
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -616,11 +623,17 @@ struct IMAPConfig {
 
 struct AppConfig: Codable {
     var accounts: [IMAPAccount]
+    var virtualFolders: [VirtualFolder]
+    
+    init(accounts: [IMAPAccount] = [], virtualFolders: [VirtualFolder] = []) {
+        self.accounts = accounts
+        self.virtualFolders = virtualFolders
+    }
 
     static func load() -> AppConfig {
         guard let data = UserDefaults.standard.data(forKey: "AppConfig") else {
             print("⚠️ No AppConfig found in UserDefaults")
-            return AppConfig(accounts: [])
+            return AppConfig(accounts: [], virtualFolders: [])
         }
 
         do {
@@ -643,8 +656,20 @@ struct AppConfig: Codable {
             if let jsonString = String(data: data, encoding: .utf8) {
                 print("📄 Raw JSON: \(jsonString)")
             }
-            return AppConfig(accounts: [])
+            return AppConfig(accounts: [], virtualFolders: [])
         }
+    }
+    
+    // Custom decoder for backward compatibility
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        accounts = try container.decode([IMAPAccount].self, forKey: .accounts)
+        virtualFolders = try container.decodeIfPresent([VirtualFolder].self, forKey: .virtualFolders) ?? []
+    }
+    
+    enum CodingKeys: String, CodingKey {
+        case accounts
+        case virtualFolders
     }
 
     func save() {
@@ -674,6 +699,79 @@ struct AppConfig: Codable {
            let folderIndex = accounts[accountIndex].folders.firstIndex(where: { $0.id == folderId }) {
             accounts[accountIndex].folders[folderIndex].lastSeenUID = uid
             save()
+        }
+    }
+}
+
+// MARK: - Virtual Folder (aggregates emails from multiple sources)
+
+struct FolderSource: Codable, Identifiable, Equatable, Hashable {
+    let id: UUID
+    var accountId: UUID      // Reference to IMAPAccount
+    var folderPath: String   // e.g., "INBOX" or "INBOX/chromium"
+    
+    init(id: UUID = UUID(), accountId: UUID, folderPath: String) {
+        self.id = id
+        self.accountId = accountId
+        self.folderPath = folderPath
+    }
+}
+
+struct VirtualFolder: Codable, Identifiable, Equatable, Hashable {
+    let id: UUID
+    var name: String
+    var icon: String
+    var iconType: FolderConfig.IconType
+    var iconColor: String
+    var sources: [FolderSource]  // Which account/folder combinations to pull from
+    var filterGroups: [FilterGroup]  // Filters applied to aggregated emails
+    var groupLogic: FolderConfig.FilterLogic
+    var enabled: Bool
+    var popoverWidth: FolderConfig.PopoverWidth
+    var maxEmails: Int  // Max emails to show (0 = unlimited)
+    
+    init(
+        id: UUID = UUID(),
+        name: String = "Virtual Folder",
+        icon: String = "tray.2",
+        iconType: FolderConfig.IconType = .sfSymbol,
+        iconColor: String = "#007AFF",
+        sources: [FolderSource] = [],
+        filterGroups: [FilterGroup] = [],
+        groupLogic: FolderConfig.FilterLogic = .or,
+        enabled: Bool = true,
+        popoverWidth: FolderConfig.PopoverWidth = .large,
+        maxEmails: Int = 100
+    ) {
+        self.id = id
+        self.name = name
+        self.icon = icon
+        self.iconType = iconType
+        self.iconColor = iconColor
+        self.sources = sources
+        self.filterGroups = filterGroups
+        self.groupLogic = groupLogic
+        self.enabled = enabled
+        self.popoverWidth = popoverWidth
+        self.maxEmails = maxEmails
+    }
+    
+    var nsColor: NSColor {
+        NSColor(hex: iconColor) ?? .systemBlue
+    }
+    
+    /// Check if an email matches the virtual folder's filters
+    func matchesFilters(email: Email) -> Bool {
+        let activeGroups = filterGroups.filter { $0.enabled }
+        
+        if activeGroups.isEmpty {
+            return true  // No filters = show all
+        }
+        
+        if groupLogic == .and {
+            return activeGroups.allSatisfy { $0.matches(email: email) }
+        } else {
+            return activeGroups.contains { $0.matches(email: email) }
         }
     }
 }

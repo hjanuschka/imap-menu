@@ -5,13 +5,38 @@ struct SettingsView: View {
     
     @State private var config = AppConfig.load()
     @State private var selectedAccountID: UUID?
+    @State private var selectedVirtualFolderID: UUID?
     @State private var testingConnection = false
     @State private var testMessage = ""
     @State private var showFolderBrowser = false
     @State private var availableFolders: [String] = []
     @State private var hasUnsavedChanges = false
+    @State private var selectedTab = 0  // 0 = accounts, 1 = virtual folders
 
     var body: some View {
+        VStack(spacing: 0) {
+            // Tab selector
+            Picker("", selection: $selectedTab) {
+                Text("Accounts").tag(0)
+                Text("Virtual Folders").tag(1)
+            }
+            .pickerStyle(.segmented)
+            .padding()
+            
+            Divider()
+            
+            if selectedTab == 0 {
+                accountsView
+            } else {
+                virtualFoldersView
+            }
+        }
+        .frame(minWidth: 900, minHeight: 600)
+    }
+    
+    // MARK: - Accounts View
+    
+    private var accountsView: some View {
         HSplitView {
             // Left: Account list
             VStack(alignment: .leading, spacing: 8) {
@@ -108,10 +133,257 @@ struct SettingsView: View {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0"
     }
     
+    // MARK: - Virtual Folders View
+    
+    private var virtualFoldersView: some View {
+        HSplitView {
+            // Left: Virtual folder list
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Virtual Folders")
+                    .font(.headline)
+                    .padding(.horizontal)
+                
+                Text("Aggregate emails from multiple accounts")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal)
+
+                List(selection: $selectedVirtualFolderID) {
+                    ForEach($config.virtualFolders) { $vf in
+                        HStack {
+                            Image(systemName: vf.icon)
+                                .foregroundColor(Color(NSColor(hex: vf.iconColor) ?? .systemBlue))
+                            Text(vf.name)
+                        }
+                        .tag(vf.id)
+                    }
+                }
+
+                HStack {
+                    Button("+") {
+                        let newVF = VirtualFolder(name: "New Virtual Folder")
+                        config.virtualFolders.append(newVF)
+                        selectedVirtualFolderID = newVF.id
+                    }
+
+                    if let selectedID = selectedVirtualFolderID,
+                       config.virtualFolders.contains(where: { $0.id == selectedID }) {
+                        Button("-") {
+                            config.virtualFolders.removeAll { $0.id == selectedID }
+                            selectedVirtualFolderID = config.virtualFolders.first?.id
+                        }
+                    }
+
+                    Spacer()
+                }
+                .padding(.horizontal)
+            }
+            .frame(minWidth: 200, maxWidth: 250)
+
+            // Right: Virtual folder details
+            if let index = config.virtualFolders.firstIndex(where: { $0.id == selectedVirtualFolderID }) {
+                VirtualFolderDetailView(
+                    virtualFolder: $config.virtualFolders[index],
+                    accounts: config.accounts
+                )
+            } else {
+                Text("Select a virtual folder or create a new one")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+    
     private func saveConfig() {
         config.save()
         NotificationCenter.default.post(name: NSNotification.Name("RefreshEmails"), object: nil)
         testMessage = "Configuration saved and reloaded"
+    }
+}
+
+// MARK: - Virtual Folder Detail View
+
+struct VirtualFolderDetailView: View {
+    @Binding var virtualFolder: VirtualFolder
+    let accounts: [IMAPAccount]
+    
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                // Basic settings
+                GroupBox(label: Text("Virtual Folder Settings")) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        TextField("Name", text: $virtualFolder.name)
+                        
+                        HStack {
+                            Toggle("Enabled", isOn: $virtualFolder.enabled)
+                            Spacer()
+                        }
+                        
+                        HStack {
+                            Text("Icon:")
+                            TextField("SF Symbol", text: $virtualFolder.icon)
+                                .frame(width: 150)
+                            Image(systemName: virtualFolder.icon)
+                                .foregroundColor(Color(virtualFolder.nsColor))
+                        }
+                        
+                        ColorPicker("Icon Color:", selection: Binding(
+                            get: { Color(virtualFolder.nsColor) },
+                            set: { virtualFolder.iconColor = $0.hexString }
+                        ))
+                        
+                        Picker("Max Emails:", selection: $virtualFolder.maxEmails) {
+                            Text("50").tag(50)
+                            Text("100").tag(100)
+                            Text("200").tag(200)
+                            Text("500").tag(500)
+                        }
+                        .pickerStyle(.segmented)
+                    }
+                    .padding()
+                }
+                
+                // Sources
+                GroupBox(label: Text("Email Sources")) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Select which folders to aggregate emails from:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        ForEach(accounts) { account in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(account.name)
+                                    .font(.headline)
+                                
+                                ForEach(account.folders.filter { $0.enabled }) { folder in
+                                    HStack {
+                                        let isSelected = virtualFolder.sources.contains { 
+                                            $0.accountId == account.id && $0.folderPath == folder.folderPath 
+                                        }
+                                        
+                                        Toggle(isOn: Binding(
+                                            get: { isSelected },
+                                            set: { newValue in
+                                                if newValue {
+                                                    virtualFolder.sources.append(
+                                                        FolderSource(accountId: account.id, folderPath: folder.folderPath)
+                                                    )
+                                                } else {
+                                                    virtualFolder.sources.removeAll { 
+                                                        $0.accountId == account.id && $0.folderPath == folder.folderPath 
+                                                    }
+                                                }
+                                            }
+                                        )) {
+                                            HStack {
+                                                Image(systemName: folder.icon)
+                                                    .foregroundColor(Color(folder.nsColor))
+                                                Text(folder.name)
+                                            }
+                                        }
+                                    }
+                                    .padding(.leading, 16)
+                                }
+                            }
+                            .padding(.bottom, 8)
+                        }
+                        
+                        if accounts.isEmpty {
+                            Text("No accounts configured. Add accounts first.")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding()
+                }
+                
+                // Filters
+                GroupBox(label: Text("Filters (Optional)")) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Only show emails that match these filters:")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        
+                        Picker("Filter Logic:", selection: $virtualFolder.groupLogic) {
+                            Text("Match ANY filter").tag(FolderConfig.FilterLogic.or)
+                            Text("Match ALL filters").tag(FolderConfig.FilterLogic.and)
+                        }
+                        .pickerStyle(.segmented)
+                        
+                        ForEach($virtualFolder.filterGroups) { $group in
+                            HStack {
+                                Toggle("", isOn: $group.enabled)
+                                    .labelsHidden()
+                                TextField("Group name", text: $group.name)
+                                    .frame(width: 150)
+                                
+                                Spacer()
+                                
+                                Button(action: {
+                                    virtualFolder.filterGroups.removeAll { $0.id == group.id }
+                                }) {
+                                    Image(systemName: "trash")
+                                        .foregroundColor(.red)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            
+                            // Simple filter list (read-only)
+                            ForEach(group.filters, id: \.id) { filter in
+                                HStack {
+                                    Text("\(filter.field.rawValue) \(filter.matchType.rawValue) '\(filter.pattern)'")
+                                        .font(.caption)
+                                }
+                                .padding(.leading, 24)
+                            }
+                            
+                            Button(action: {
+                                var updatedGroup = group
+                                updatedGroup.filters.append(EmailFilter(
+                                    id: UUID(),
+                                    filterType: .include,
+                                    field: .subject,
+                                    matchType: .contains,
+                                    pattern: "JXL"  // Default example pattern
+                                ))
+                                if let idx = virtualFolder.filterGroups.firstIndex(where: { $0.id == group.id }) {
+                                    virtualFolder.filterGroups[idx] = updatedGroup
+                                }
+                            }) {
+                                Label("Add Filter", systemImage: "plus")
+                            }
+                            .padding(.leading, 24)
+                        }
+                        
+                        Button(action: {
+                            virtualFolder.filterGroups.append(FilterGroup(
+                                name: "Filter Group",
+                                filters: [],
+                                logic: .and,
+                                enabled: true
+                            ))
+                        }) {
+                            Label("Add Filter Group", systemImage: "plus.circle")
+                        }
+                    }
+                    .padding()
+                }
+            }
+            .padding()
+        }
+    }
+}
+
+// Helper extension
+extension Color {
+    var hexString: String {
+        guard let components = NSColor(self).cgColor.components, components.count >= 3 else {
+            return "#007AFF"
+        }
+        let r = Int(components[0] * 255)
+        let g = Int(components[1] * 255)
+        let b = Int(components[2] * 255)
+        return String(format: "#%02X%02X%02X", r, g, b)
     }
 }
 

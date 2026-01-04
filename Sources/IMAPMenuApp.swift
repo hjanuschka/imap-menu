@@ -289,8 +289,161 @@ class FolderMenuItem {
     }
 }
 
+// Represents a virtual folder menu item that aggregates from multiple sources
+class VirtualFolderMenuItem {
+    let statusItem: NSStatusItem
+    let popover: NSPopover
+    let virtualFolderManager: VirtualFolderManager
+    var cancellables = Set<AnyCancellable>()
+    
+    deinit {
+        print("[VirtualFolderMenuItem] DEINIT for \(virtualFolderManager.virtualFolder.name)")
+        cancellables.removeAll()
+    }
+    
+    init(virtualFolder: VirtualFolder, allEmailManagers: [EmailManager]) {
+        // Create status bar item
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        statusItem.isVisible = true
+        
+        // Create virtual folder manager
+        virtualFolderManager = VirtualFolderManager(virtualFolder: virtualFolder, allEmailManagers: allEmailManagers)
+        
+        // Create popover
+        popover = NSPopover()
+        popover.contentSize = virtualFolder.popoverWidth.size
+        popover.behavior = .transient
+        popover.animates = true
+        
+        let contentView = VirtualFolderContentView(manager: virtualFolderManager)
+            .frame(width: virtualFolder.popoverWidth.size.width,
+                   height: virtualFolder.popoverWidth.size.height)
+        
+        let hostingController = NSHostingController(rootView: contentView)
+        hostingController.view.wantsLayer = true
+        hostingController.view.layer?.backgroundColor = .clear
+        popover.contentViewController = hostingController
+        
+        // Set up button
+        if let button = statusItem.button {
+            updateMenuBarIcon(unreadCount: 0)
+            button.action = #selector(togglePopover)
+            button.target = self
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+        }
+        
+        // Observe unread count changes
+        virtualFolderManager.$unreadCount
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] count in
+                guard let self = self else { return }
+                print("📢 [Virtual: \(virtualFolder.name)] unreadCount changed to \(count)")
+                self.updateMenuBarIcon(unreadCount: count)
+            }
+            .store(in: &cancellables)
+    }
+    
+    func updateMenuBarIcon(unreadCount: Int) {
+        guard let button = statusItem.button else { return }
+        
+        let vf = virtualFolderManager.virtualFolder
+        let iconColor = vf.nsColor
+        
+        // Get icon
+        let iconImage: NSImage?
+        switch vf.iconType {
+        case .sfSymbol:
+            iconImage = NSImage(systemSymbolName: vf.icon, accessibilityDescription: vf.name)
+        case .url, .file:
+            // For simplicity, just use SF Symbol for virtual folders for now
+            iconImage = NSImage(systemSymbolName: vf.icon, accessibilityDescription: vf.name)
+        }
+        
+        let finalImage = iconImage?.image(tintedWith: iconColor)
+        
+        // Create icon attachment
+        let iconAttachment = NSTextAttachment()
+        iconAttachment.image = finalImage
+        
+        if let image = finalImage {
+            let yOffset: CGFloat = -2
+            iconAttachment.bounds = CGRect(x: 0, y: yOffset, width: image.size.width, height: image.size.height)
+        }
+        
+        let iconString = NSMutableAttributedString(attachment: iconAttachment)
+        
+        if unreadCount > 0 {
+            let badgeText = unreadCount > 99 ? "99+" : "\(unreadCount)"
+            let badgeString = NSAttributedString(string: " \(badgeText)", attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium),
+                .foregroundColor: NSColor.systemRed
+            ])
+            iconString.append(badgeString)
+        } else {
+            let spacer = NSAttributedString(string: "  ", attributes: [
+                .font: NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .medium)
+            ])
+            iconString.append(spacer)
+        }
+        
+        button.attributedTitle = iconString
+        button.image = nil
+        button.toolTip = vf.name
+    }
+    
+    @objc func togglePopover(_ sender: AnyObject?) {
+        guard let event = NSApp.currentEvent else {
+            showPopover()
+            return
+        }
+        
+        if event.type == .rightMouseUp {
+            let menu = NSMenu()
+            menu.addItem(NSMenuItem(title: "Refresh \(virtualFolderManager.virtualFolder.name)", action: #selector(refreshEmails), keyEquivalent: ""))
+            menu.addItem(NSMenuItem.separator())
+            menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ""))
+            menu.addItem(NSMenuItem.separator())
+            menu.addItem(NSMenuItem(title: "Quit IMAPMenu", action: #selector(quitApp), keyEquivalent: ""))
+            
+            for item in menu.items {
+                item.target = self
+            }
+            
+            statusItem.menu = menu
+            statusItem.button?.performClick(nil)
+            statusItem.menu = nil
+        } else {
+            showPopover()
+        }
+    }
+    
+    private func showPopover() {
+        if let button = statusItem.button {
+            if popover.isShown {
+                popover.performClose(nil)
+            } else {
+                popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        }
+    }
+    
+    @objc func refreshEmails() {
+        virtualFolderManager.refresh()
+    }
+    
+    @objc func openSettings() {
+        NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+    }
+    
+    @objc func quitApp() {
+        NSApplication.shared.terminate(nil)
+    }
+}
+
 class AppDelegate: NSObject, NSApplicationDelegate {
     var folderMenuItems: [FolderMenuItem] = []
+    var virtualFolderMenuItems: [VirtualFolderMenuItem] = []
     var configObserver: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -313,17 +466,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func reloadConfigAndCreateMenuItems() {
         print("🔄 reloadConfigAndCreateMenuItems called")
 
-        // Stop and remove existing items - ensure complete cleanup
+        // Stop and remove existing folder items
         for item in folderMenuItems {
-            item.cancellables.removeAll()  // Cancel all Combine subscriptions
+            item.cancellables.removeAll()
             item.emailManager.stopFetching()
             item.popover.close()
             NSStatusBar.system.removeStatusItem(item.statusItem)
         }
         folderMenuItems.removeAll()
         
-        // Clear cache when reloading to prevent stale data accumulation
-        // (individual folders will repopulate on next fetch)
+        // Stop and remove existing virtual folder items
+        for item in virtualFolderMenuItems {
+            item.cancellables.removeAll()
+            item.popover.close()
+            NSStatusBar.system.removeStatusItem(item.statusItem)
+        }
+        virtualFolderMenuItems.removeAll()
+        
         print("🧹 Clearing email cache on reload")
 
         // Load config
@@ -337,16 +496,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 folderMenuItems.append(menuItem)
             }
         }
+        
+        // Create virtual folder menu items (after regular folders so they can reference their managers)
+        let allEmailManagers = folderMenuItems.map { $0.emailManager }
+        for virtualFolder in config.virtualFolders where virtualFolder.enabled {
+            print("  📐 Creating virtual menuItem for '\(virtualFolder.name)' with \(virtualFolder.sources.count) sources")
+            let menuItem = VirtualFolderMenuItem(virtualFolder: virtualFolder, allEmailManagers: allEmailManagers)
+            virtualFolderMenuItems.append(menuItem)
+        }
 
         // If no folders configured, create a setup icon
-        if folderMenuItems.isEmpty {
+        if folderMenuItems.isEmpty && virtualFolderMenuItems.isEmpty {
             let setupAccount = IMAPAccount(name: "Setup", host: "", username: "")
             let setupFolder = FolderConfig(name: "⚙️ Settings", folderPath: "")
             let setupItem = FolderMenuItem(account: setupAccount, folderConfig: setupFolder)
             folderMenuItems.append(setupItem)
         }
 
-        print("✅ Created \(folderMenuItems.count) menu items")
+        print("✅ Created \(folderMenuItems.count) folder items + \(virtualFolderMenuItems.count) virtual items")
     }
 }
 extension NSImage {
