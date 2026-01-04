@@ -101,10 +101,15 @@ class EmailCache {
                 
                 // Only load if not too old (max 1 hour)
                 if Date().timeIntervalSince(cached.lastFetchTime) < 3600 {
-                    self.cache[cached.folderPath] = cached.emails
+                    // Filter out bad cached entries (Unknown Sender = parsing failed)
+                    let validEmails = cached.emails.filter { $0.from != "Unknown Sender" || $0.subject != "No Subject" }
+                    if validEmails.count < cached.emails.count {
+                        debugLog("[EmailCache] Filtered out \(cached.emails.count - validEmails.count) bad cached entries for \(cached.folderPath)")
+                    }
+                    self.cache[cached.folderPath] = validEmails
                     self.lastFetchTime[cached.folderPath] = cached.lastFetchTime
                     self.highestUID[cached.folderPath] = cached.highestUID
-                    debugLog("[EmailCache] Loaded \(cached.emails.count) emails from disk for \(cached.folderPath)")
+                    debugLog("[EmailCache] Loaded \(validEmails.count) emails from disk for \(cached.folderPath)")
                 }
             }
         }

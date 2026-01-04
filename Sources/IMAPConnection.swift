@@ -1199,10 +1199,15 @@ class IMAPConnection {
 
     private func parseEmailsHeadersOnly(from response: String) -> [Email] {
         var emails: [Email] = []
-        let blocks = response.components(separatedBy: "* ").filter { $0.contains("FETCH") }
+        
+        // Split on CRLF followed by "* " to properly separate FETCH responses
+        // This avoids splitting on "* " that appears inside header content
+        let blocks = response.components(separatedBy: "\r\n* ").filter { $0.contains("FETCH") }
 
         for block in blocks {
-            if let email = parseEmailHeaderOnly(block) {
+            // Re-add "* " prefix if it was removed by splitting (except first block which may start with it)
+            let fullBlock = block.hasPrefix("*") ? block : "* " + block
+            if let email = parseEmailHeaderOnly(fullBlock) {
                 emails.append(email)
             }
         }

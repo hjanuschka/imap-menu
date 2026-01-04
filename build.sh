@@ -4,7 +4,7 @@
 echo "Building IMAP Menu..."
 
 # Build with Swift Package Manager
-swift build -c release
+swift build -c debug
 
 # Create app bundle structure
 APP_NAME="IMAPMenu"
@@ -18,7 +18,7 @@ mkdir -p "$MACOS_DIR"
 mkdir -p "$RESOURCES_DIR"
 
 # Copy executable
-cp ".build/release/$APP_NAME" "$MACOS_DIR/"
+cp ".build/debug/$APP_NAME" "$MACOS_DIR/"
 
 # Copy app icon
 if [ -f "AppIcon.icns" ]; then
