@@ -14,24 +14,20 @@ struct SettingsView: View {
     @State private var selectedTab = 0  // 0 = accounts, 1 = virtual folders
 
     var body: some View {
-        VStack(spacing: 0) {
-            // Tab selector
-            Picker("", selection: $selectedTab) {
-                Text("Accounts").tag(0)
-                Text("Virtual Folders").tag(1)
-            }
-            .pickerStyle(.segmented)
-            .padding()
+        TabView(selection: $selectedTab) {
+            accountsView
+                .tabItem {
+                    Label("Accounts", systemImage: "person.crop.circle")
+                }
+                .tag(0)
             
-            Divider()
-            
-            if selectedTab == 0 {
-                accountsView
-            } else {
-                virtualFoldersView
-            }
+            virtualFoldersView
+                .tabItem {
+                    Label("Virtual Folders", systemImage: "tray.2")
+                }
+                .tag(1)
         }
-        .frame(minWidth: 900, minHeight: 600)
+        .frame(minWidth: 800, minHeight: 550)
     }
     
     // MARK: - Accounts View
@@ -88,7 +84,7 @@ struct SettingsView: View {
                     .foregroundColor(.secondary)
             }
         }
-        .frame(minWidth: 950, minHeight: 750)
+        .frame(minWidth: 750, minHeight: 500)
         .padding()
         .toolbar {
             ToolbarItem(placement: .status) {
