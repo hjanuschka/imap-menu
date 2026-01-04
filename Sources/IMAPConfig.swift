@@ -462,13 +462,15 @@ struct IMAPAccount: Codable, Identifiable, Equatable, Hashable {
     // Account type enum
     enum AccountType: String, Codable, CaseIterable {
         case imap = "IMAP"
-        case gmail = "Gmail (OAuth2)"
+        case gmailAppPassword = "Gmail (App Password)"
+        case gmailOAuth2 = "Gmail (OAuth2)"
         // Future: case combined = "Combined"
         
         var description: String {
             switch self {
             case .imap: return "Standard IMAP"
-            case .gmail: return "Gmail with OAuth2"
+            case .gmailAppPassword: return "Gmail with App Password (recommended)"
+            case .gmailOAuth2: return "Gmail with OAuth2 (advanced)"
             }
         }
     }

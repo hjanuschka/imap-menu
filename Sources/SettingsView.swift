@@ -160,7 +160,7 @@ struct AccountDetailView: View {
                         .pickerStyle(.segmented)
                         .onChange(of: account.accountType) { newType in
                             // Auto-fill server settings for known providers
-                            if newType == .gmail {
+                            if newType == .gmailAppPassword || newType == .gmailOAuth2 {
                                 account.host = "imap.gmail.com"
                                 account.port = 993
                                 account.useSSL = true
@@ -170,8 +170,26 @@ struct AccountDetailView: View {
                             }
                         }
                         
-                        if account.accountType == .gmail {
-                            Text("Gmail requires OAuth2 authentication. You'll need to create OAuth2 credentials in Google Cloud Console.")
+                        if account.accountType == .gmailAppPassword {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("✓ Recommended for Gmail!")
+                                    .font(.caption)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.green)
+                                Text("1. Enable 2-Step Verification in your Google Account")
+                                Text("2. Go to myaccount.google.com/apppasswords")
+                                Text("3. Generate an App Password for 'Mail'")
+                                Text("4. Use that 16-character password below")
+                            }
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            
+                            Link("Generate App Password →", destination: URL(string: "https://myaccount.google.com/apppasswords")!)
+                                .font(.caption)
+                        }
+                        
+                        if account.accountType == .gmailOAuth2 {
+                            Text("Advanced: Requires creating OAuth2 credentials in Google Cloud Console.")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -185,7 +203,7 @@ struct AccountDetailView: View {
                         TextField("Account Name", text: $account.name)
 
                         TextField("IMAP Host", text: $account.host)
-                            .disabled(account.accountType == .gmail)
+                            .disabled(account.accountType == .gmailOAuth2)
 
                         HStack {
                             TextField("Port", value: $account.port, format: .number)
@@ -205,7 +223,7 @@ struct AccountDetailView: View {
                             Button("Test Connection") {
                                 testConnection()
                             }
-                            .disabled(testingConnection || account.host.isEmpty || (account.accountType == .gmail && !hasOAuth2Tokens))
+                            .disabled(testingConnection || account.host.isEmpty || (account.accountType == .gmailOAuth2 && !hasOAuth2Tokens))
 
                             if testingConnection {
                                 ProgressView()
@@ -223,7 +241,7 @@ struct AccountDetailView: View {
                 }
                 
                 // OAuth2 Settings (Gmail only)
-                if account.accountType == .gmail {
+                if account.accountType == .gmailOAuth2 {
                     GroupBox(label: Text("OAuth2 Authentication")) {
                         VStack(alignment: .leading, spacing: 12) {
                             Text("To use Gmail, you need to create OAuth2 credentials:")
@@ -434,7 +452,7 @@ struct AccountDetailView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let config: IMAPConfig
-                if account.accountType == .gmail {
+                if account.accountType == .gmailOAuth2 {
                     guard let tokens = OAuth2Manager.shared.loadTokens(for: account.id.uuidString) else {
                         throw OAuth2Manager.OAuth2Error.missingCredentials
                     }
@@ -505,7 +523,7 @@ struct AccountDetailView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             do {
                 let config: IMAPConfig
-                if account.accountType == .gmail {
+                if account.accountType == .gmailOAuth2 {
                     guard let tokens = OAuth2Manager.shared.loadTokens(for: account.id.uuidString) else {
                         throw OAuth2Manager.OAuth2Error.missingCredentials
                     }

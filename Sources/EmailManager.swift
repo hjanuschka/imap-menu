@@ -726,7 +726,17 @@ class EmailManager: ObservableObject {
                 useSSL: account.useSSL
             )
             
-        case .gmail:
+        case .gmailAppPassword:
+            // App Password works like regular IMAP
+            return IMAPConfig(
+                host: account.host,
+                port: account.port,
+                username: account.username,
+                password: account.password,
+                useSSL: account.useSSL
+            )
+            
+        case .gmailOAuth2:
             // Get OAuth2 access token
             guard let accessToken = getValidAccessToken() else {
                 debugLog("[EmailManager] [\(folderConfig.name)] No valid OAuth2 token available")
