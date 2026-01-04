@@ -134,9 +134,29 @@ class IMAPConnection {
         let capResponse = try sendCommandDuringLogin("CAPABILITY")
         parseCapabilities(capResponse)
         
-        let response = try sendCommandDuringLogin("LOGIN \"\(config.username)\" \"\(config.password)\"")
-        if !response.contains("OK") {
-            throw IMAPError.authenticationFailed
+        // Authenticate based on method
+        switch config.authMethod {
+        case .password(let password):
+            let response = try sendCommandDuringLogin("LOGIN \"\(config.username)\" \"\(password)\"")
+            if !response.contains("OK") {
+                throw IMAPError.authenticationFailed
+            }
+            
+        case .oauth2(let accessToken):
+            // Use XOAUTH2 for Gmail/OAuth2 authentication
+            guard capabilities.contains("AUTH=XOAUTH2") || capabilities.contains("XOAUTH2") else {
+                throw IMAPError.authenticationFailed
+            }
+            
+            let xoauth2String = OAuth2Manager.generateXOAuth2String(email: config.username, accessToken: accessToken)
+            let response = try sendCommandDuringLogin("AUTHENTICATE XOAUTH2 \(xoauth2String)")
+            if !response.contains("OK") {
+                // Parse error for better message
+                if response.contains("AUTHENTICATIONFAILED") || response.contains("Invalid credentials") {
+                    throw IMAPError.authenticationFailed
+                }
+                throw IMAPError.authenticationFailed
+            }
         }
         
         // Capabilities may change after login, re-fetch

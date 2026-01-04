@@ -710,6 +710,83 @@ class EmailManager: ObservableObject {
     private var idleQueue: DispatchQueue?
     private var shouldStopIdle = false
     
+    // OAuth2 token management
+    private var cachedAccessToken: String?
+    private var tokenRefreshLock = NSLock()
+    
+    /// Create IMAPConfig with appropriate auth method for account type
+    private func createIMAPConfig() -> IMAPConfig? {
+        switch account.accountType {
+        case .imap:
+            return IMAPConfig(
+                host: account.host,
+                port: account.port,
+                username: account.username,
+                password: account.password,
+                useSSL: account.useSSL
+            )
+            
+        case .gmail:
+            // Get OAuth2 access token
+            guard let accessToken = getValidAccessToken() else {
+                debugLog("[EmailManager] [\(folderConfig.name)] No valid OAuth2 token available")
+                return nil
+            }
+            return IMAPConfig(
+                host: account.host,
+                port: account.port,
+                username: account.username,
+                accessToken: accessToken,
+                useSSL: account.useSSL
+            )
+        }
+    }
+    
+    /// Get a valid access token, refreshing if necessary
+    private func getValidAccessToken() -> String? {
+        tokenRefreshLock.lock()
+        defer { tokenRefreshLock.unlock() }
+        
+        // Check if we have cached valid token
+        if let tokens = OAuth2Manager.shared.loadTokens(for: account.id.uuidString) {
+            if !tokens.isExpired {
+                return tokens.accessToken
+            }
+            
+            // Token expired, need to refresh
+            debugLog("[EmailManager] [\(folderConfig.name)] OAuth2 token expired, refreshing...")
+            
+            let semaphore = DispatchSemaphore(value: 0)
+            var newToken: String?
+            
+            let config = OAuth2Config(
+                clientId: account.oauth2ClientId,
+                clientSecret: account.oauth2ClientSecret,
+                authorizationEndpoint: URL(string: "https://accounts.google.com/o/oauth2/v2/auth")!,
+                tokenEndpoint: URL(string: "https://oauth2.googleapis.com/token")!,
+                redirectURI: "com.imapmenu://oauth2callback",
+                scopes: ["https://mail.google.com/"]
+            )
+            
+            OAuth2Manager.shared.refreshTokens(refreshToken: tokens.refreshToken, config: config) { result in
+                switch result {
+                case .success(let newTokens):
+                    OAuth2Manager.shared.saveTokens(newTokens, for: self.account.id.uuidString)
+                    newToken = newTokens.accessToken
+                    debugLog("[EmailManager] [\(self.folderConfig.name)] OAuth2 token refreshed successfully")
+                case .failure(let error):
+                    debugLog("[EmailManager] [\(self.folderConfig.name)] OAuth2 token refresh failed: \(error)")
+                }
+                semaphore.signal()
+            }
+            
+            _ = semaphore.wait(timeout: .now() + 30)
+            return newToken
+        }
+        
+        return nil
+    }
+    
     func startFetching() {
         // Try to show cached emails immediately
         if let cached = cache.getCachedEmails(for: cacheKey) {
@@ -730,13 +807,11 @@ class EmailManager: ObservableObject {
     /// Start IDLE mode if supported, otherwise use traditional polling
     private func startIdleOrPolling() {
         // First do an initial fetch to get connection and check capabilities
-        let imapConfig = IMAPConfig(
-            host: account.host,
-            port: account.port,
-            username: account.username,
-            password: account.password,
-            useSSL: account.useSSL
-        )
+        guard let imapConfig = createIMAPConfig() else {
+            debugLog("[EmailManager] [\(folderConfig.name)] Failed to create IMAP config")
+            startTimers()  // Fall back to polling
+            return
+        }
         
         fetchQueue.async { [weak self] in
             guard let self = self else { return }
@@ -803,13 +878,10 @@ class EmailManager: ObservableObject {
     
     /// Main IDLE loop - runs on dedicated queue
     private func runIdleLoop() {
-        let imapConfig = IMAPConfig(
-            host: account.host,
-            port: account.port,
-            username: account.username,
-            password: account.password,
-            useSSL: account.useSSL
-        )
+        guard let imapConfig = createIMAPConfig() else {
+            debugLog("[EmailManager] [\(folderConfig.name)] IDLE: Failed to create IMAP config")
+            return
+        }
         
         while !shouldStopIdle {
             do {
@@ -1088,13 +1160,14 @@ class EmailManager: ObservableObject {
         fetchQueue.async { [weak self] in
             guard let self = self else { return }
 
-            let imapConfig = IMAPConfig(
-                host: self.account.host,
-                port: self.account.port,
-                username: self.account.username,
-                password: self.account.password,
-                useSSL: self.account.useSSL
-            )
+            guard let imapConfig = self.createIMAPConfig() else {
+                DispatchQueue.main.async {
+                    self.errorMessage = "Failed to create IMAP config (check OAuth2 if using Gmail)"
+                    self.isLoading = false
+                    self.isFetching = false
+                }
+                return
+            }
 
             do {
                 let folderPath = self.folderConfig.folderPath
@@ -1328,13 +1401,9 @@ class EmailManager: ObservableObject {
 
             let folderPath = self.folderConfig.folderPath
             do {
-                let imapConfig = IMAPConfig(
-                    host: self.account.host,
-                    port: self.account.port,
-                    username: self.account.username,
-                    password: self.account.password,
-                    useSSL: self.account.useSSL
-                )
+                guard let imapConfig = self.createIMAPConfig() else {
+                    throw IMAPError.authenticationFailed
+                }
                 let connection = try self.getOrCreateConnection(config: imapConfig)
                 try connection.markAsRead(folder: folderPath, uid: email.uid)
                 debugLog("[EmailManager] [\(self.folderConfig.name)] markAsRead SUCCESS: uid=\(email.uid)")
@@ -1367,13 +1436,9 @@ class EmailManager: ObservableObject {
 
             let folderPath = self.folderConfig.folderPath
             do {
-                let imapConfig = IMAPConfig(
-                    host: self.account.host,
-                    port: self.account.port,
-                    username: self.account.username,
-                    password: self.account.password,
-                    useSSL: self.account.useSSL
-                )
+                guard let imapConfig = self.createIMAPConfig() else {
+                    throw IMAPError.authenticationFailed
+                }
                 let connection = try self.getOrCreateConnection(config: imapConfig)
                 try connection.markAsUnread(folder: folderPath, uid: email.uid)
                 debugLog("[EmailManager] [\(self.folderConfig.name)] markAsUnread SUCCESS: uid=\(email.uid)")
@@ -1408,13 +1473,9 @@ class EmailManager: ObservableObject {
 
             let folderPath = self.folderConfig.folderPath
             do {
-                let imapConfig = IMAPConfig(
-                    host: self.account.host,
-                    port: self.account.port,
-                    username: self.account.username,
-                    password: self.account.password,
-                    useSSL: self.account.useSSL
-                )
+                guard let imapConfig = self.createIMAPConfig() else {
+                    throw IMAPError.authenticationFailed
+                }
                 let connection = try self.getOrCreateConnection(config: imapConfig)
                 try connection.deleteEmail(folder: folderPath, uid: email.uid)
                 debugLog("[EmailManager] [\(self.folderConfig.name)] deleteEmail SUCCESS: uid=\(email.uid)")
@@ -1448,13 +1509,9 @@ class EmailManager: ObservableObject {
 
             let folderPath = self.folderConfig.folderPath
             do {
-                let imapConfig = IMAPConfig(
-                    host: self.account.host,
-                    port: self.account.port,
-                    username: self.account.username,
-                    password: self.account.password,
-                    useSSL: self.account.useSSL
-                )
+                guard let imapConfig = self.createIMAPConfig() else {
+                    throw IMAPError.authenticationFailed
+                }
                 let connection = try self.getOrCreateConnection(config: imapConfig)
                 let fullMessage = try connection.fetchFullMessage(folder: folderPath, uid: email.uid)
 

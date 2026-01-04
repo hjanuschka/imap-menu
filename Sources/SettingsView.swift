@@ -138,16 +138,54 @@ struct AccountDetailView: View {
     @Binding var availableFolders: [String]
     @State private var testingSmtp = false
     @State private var smtpTestMessage = ""
+    @State private var isAuthenticatingOAuth2 = false
+    @State private var oauth2Message = ""
+    @StateObject private var oauth2Manager = OAuth2Manager.shared
+    
+    private var hasOAuth2Tokens: Bool {
+        OAuth2Manager.shared.loadTokens(for: account.id.uuidString) != nil
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                // Account Type
+                GroupBox(label: Text("Account Type")) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Picker("Type", selection: $account.accountType) {
+                            ForEach(IMAPAccount.AccountType.allCases, id: \.self) { type in
+                                Text(type.rawValue).tag(type)
+                            }
+                        }
+                        .pickerStyle(.segmented)
+                        .onChange(of: account.accountType) { newType in
+                            // Auto-fill server settings for known providers
+                            if newType == .gmail {
+                                account.host = "imap.gmail.com"
+                                account.port = 993
+                                account.useSSL = true
+                                account.smtpHost = "smtp.gmail.com"
+                                account.smtpPort = 587
+                                account.smtpUseSSL = true
+                            }
+                        }
+                        
+                        if account.accountType == .gmail {
+                            Text("Gmail requires OAuth2 authentication. You'll need to create OAuth2 credentials in Google Cloud Console.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding()
+                }
+                
                 // Account settings
                 GroupBox(label: Text("IMAP Settings (Receiving)")) {
                     VStack(alignment: .leading, spacing: 12) {
                         TextField("Account Name", text: $account.name)
 
                         TextField("IMAP Host", text: $account.host)
+                            .disabled(account.accountType == .gmail)
 
                         HStack {
                             TextField("Port", value: $account.port, format: .number)
@@ -158,14 +196,16 @@ struct AccountDetailView: View {
                         TextField("Username / Email", text: $account.username)
                             .textContentType(.username)
 
-                        SecureField("Password", text: $account.password)
-                            .textContentType(.password)
+                        if account.accountType == .imap {
+                            SecureField("Password", text: $account.password)
+                                .textContentType(.password)
+                        }
 
                         HStack {
                             Button("Test Connection") {
                                 testConnection()
                             }
-                            .disabled(testingConnection || account.host.isEmpty)
+                            .disabled(testingConnection || account.host.isEmpty || (account.accountType == .gmail && !hasOAuth2Tokens))
 
                             if testingConnection {
                                 ProgressView()
@@ -180,6 +220,67 @@ struct AccountDetailView: View {
                         }
                     }
                     .padding()
+                }
+                
+                // OAuth2 Settings (Gmail only)
+                if account.accountType == .gmail {
+                    GroupBox(label: Text("OAuth2 Authentication")) {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("To use Gmail, you need to create OAuth2 credentials:")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("1. Go to Google Cloud Console")
+                                Text("2. Create a new project or select existing")
+                                Text("3. Enable Gmail API")
+                                Text("4. Create OAuth2 credentials (Desktop app)")
+                                Text("5. Add your email to test users")
+                                Text("6. Copy Client ID and Secret below")
+                            }
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            
+                            Link("Open Google Cloud Console", destination: URL(string: "https://console.cloud.google.com/apis/credentials")!)
+                                .font(.caption)
+                            
+                            Divider()
+                            
+                            TextField("OAuth2 Client ID", text: $account.oauth2ClientId)
+                            SecureField("OAuth2 Client Secret", text: $account.oauth2ClientSecret)
+                            
+                            HStack {
+                                if hasOAuth2Tokens {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.green)
+                                    Text("Authenticated")
+                                        .foregroundColor(.green)
+                                    
+                                    Button("Re-authenticate") {
+                                        authenticateOAuth2()
+                                    }
+                                    .disabled(isAuthenticatingOAuth2 || account.oauth2ClientId.isEmpty)
+                                } else {
+                                    Button("Authenticate with Google") {
+                                        authenticateOAuth2()
+                                    }
+                                    .disabled(isAuthenticatingOAuth2 || account.oauth2ClientId.isEmpty || account.oauth2ClientSecret.isEmpty)
+                                }
+                                
+                                if isAuthenticatingOAuth2 {
+                                    ProgressView()
+                                        .scaleEffect(0.7)
+                                }
+                            }
+                            
+                            if !oauth2Message.isEmpty {
+                                Text(oauth2Message)
+                                    .font(.caption)
+                                    .foregroundColor(oauth2Message.contains("✓") ? .green : .red)
+                            }
+                        }
+                        .padding()
+                    }
                 }
 
                 // SMTP settings
@@ -332,13 +433,27 @@ struct AccountDetailView: View {
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let config = IMAPConfig(
-                    host: account.host,
-                    port: account.port,
-                    username: account.username,
-                    password: account.password,
-                    useSSL: account.useSSL
-                )
+                let config: IMAPConfig
+                if account.accountType == .gmail {
+                    guard let tokens = OAuth2Manager.shared.loadTokens(for: account.id.uuidString) else {
+                        throw OAuth2Manager.OAuth2Error.missingCredentials
+                    }
+                    config = IMAPConfig(
+                        host: account.host,
+                        port: account.port,
+                        username: account.username,
+                        accessToken: tokens.accessToken,
+                        useSSL: account.useSSL
+                    )
+                } else {
+                    config = IMAPConfig(
+                        host: account.host,
+                        port: account.port,
+                        username: account.username,
+                        password: account.password,
+                        useSSL: account.useSSL
+                    )
+                }
                 let connection = IMAPConnection(config: config)
                 try connection.connect()
                 connection.disconnect()
@@ -356,18 +471,60 @@ struct AccountDetailView: View {
         }
     }
 
+    private func authenticateOAuth2() {
+        isAuthenticatingOAuth2 = true
+        oauth2Message = ""
+        
+        let config = OAuth2Config(
+            clientId: account.oauth2ClientId,
+            clientSecret: account.oauth2ClientSecret,
+            authorizationEndpoint: URL(string: "https://accounts.google.com/o/oauth2/v2/auth")!,
+            tokenEndpoint: URL(string: "https://oauth2.googleapis.com/token")!,
+            redirectURI: "com.imapmenu://oauth2callback",
+            scopes: ["https://mail.google.com/"]
+        )
+        
+        OAuth2Manager.shared.authorize(config: config, email: account.username) { result in
+            DispatchQueue.main.async {
+                isAuthenticatingOAuth2 = false
+                
+                switch result {
+                case .success(let tokens):
+                    OAuth2Manager.shared.saveTokens(tokens, for: account.id.uuidString)
+                    oauth2Message = "✓ Authentication successful!"
+                case .failure(let error):
+                    oauth2Message = "✗ \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+    
     private func browseFolders() {
         testMessage = "Loading folders..."
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let config = IMAPConfig(
-                    host: account.host,
-                    port: account.port,
-                    username: account.username,
-                    password: account.password,
-                    useSSL: account.useSSL
-                )
+                let config: IMAPConfig
+                if account.accountType == .gmail {
+                    guard let tokens = OAuth2Manager.shared.loadTokens(for: account.id.uuidString) else {
+                        throw OAuth2Manager.OAuth2Error.missingCredentials
+                    }
+                    config = IMAPConfig(
+                        host: account.host,
+                        port: account.port,
+                        username: account.username,
+                        accessToken: tokens.accessToken,
+                        useSSL: account.useSSL
+                    )
+                } else {
+                    config = IMAPConfig(
+                        host: account.host,
+                        port: account.port,
+                        username: account.username,
+                        password: account.password,
+                        useSSL: account.useSSL
+                    )
+                }
                 let connection = IMAPConnection(config: config)
                 try connection.connect()
                 let folders = try connection.listFolders()

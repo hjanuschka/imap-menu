@@ -459,14 +459,33 @@ struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
 }
 
 struct IMAPAccount: Codable, Identifiable, Equatable, Hashable {
+    // Account type enum
+    enum AccountType: String, Codable, CaseIterable {
+        case imap = "IMAP"
+        case gmail = "Gmail (OAuth2)"
+        // Future: case combined = "Combined"
+        
+        var description: String {
+            switch self {
+            case .imap: return "Standard IMAP"
+            case .gmail: return "Gmail with OAuth2"
+            }
+        }
+    }
+    
     let id: UUID
     var name: String
+    var accountType: AccountType
     var host: String
     var port: Int
     var username: String
-    var password: String
+    var password: String  // For IMAP accounts only
     var useSSL: Bool
     var folders: [FolderConfig]
+    
+    // OAuth2 settings for Gmail
+    var oauth2ClientId: String
+    var oauth2ClientSecret: String
 
     // SMTP settings for sending emails
     var smtpHost: String
@@ -478,15 +497,18 @@ struct IMAPAccount: Codable, Identifiable, Equatable, Hashable {
     var fromName: String      // Display name shown in From field (if empty, uses account name)
     var signature: String     // Text signature appended to outgoing emails
 
-    init(id: UUID = UUID(), name: String, host: String, port: Int = 993, username: String, password: String = "", useSSL: Bool = true, folders: [FolderConfig] = [], smtpHost: String = "", smtpPort: Int = 587, smtpUseSSL: Bool = true, smtpUsername: String = "", smtpPassword: String = "", fromEmail: String = "", fromName: String = "", signature: String = "") {
+    init(id: UUID = UUID(), name: String, accountType: AccountType = .imap, host: String, port: Int = 993, username: String, password: String = "", useSSL: Bool = true, folders: [FolderConfig] = [], oauth2ClientId: String = "", oauth2ClientSecret: String = "", smtpHost: String = "", smtpPort: Int = 587, smtpUseSSL: Bool = true, smtpUsername: String = "", smtpPassword: String = "", fromEmail: String = "", fromName: String = "", signature: String = "") {
         self.id = id
         self.name = name
+        self.accountType = accountType
         self.host = host
         self.port = port
         self.username = username
         self.password = password
         self.useSSL = useSSL
         self.folders = folders
+        self.oauth2ClientId = oauth2ClientId
+        self.oauth2ClientSecret = oauth2ClientSecret
         self.smtpHost = smtpHost
         self.smtpPort = smtpPort
         self.smtpUseSSL = smtpUseSSL
@@ -503,12 +525,17 @@ struct IMAPAccount: Codable, Identifiable, Equatable, Hashable {
 
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
+        accountType = try container.decodeIfPresent(AccountType.self, forKey: .accountType) ?? .imap
         host = try container.decode(String.self, forKey: .host)
         port = try container.decode(Int.self, forKey: .port)
         username = try container.decode(String.self, forKey: .username)
         password = try container.decodeIfPresent(String.self, forKey: .password) ?? ""
         useSSL = try container.decode(Bool.self, forKey: .useSSL)
         folders = try container.decode([FolderConfig].self, forKey: .folders)
+        
+        // OAuth2 fields
+        oauth2ClientId = try container.decodeIfPresent(String.self, forKey: .oauth2ClientId) ?? ""
+        oauth2ClientSecret = try container.decodeIfPresent(String.self, forKey: .oauth2ClientSecret) ?? ""
 
         // SMTP fields with defaults for backward compatibility
         smtpHost = try container.decodeIfPresent(String.self, forKey: .smtpHost) ?? ""
@@ -555,11 +582,34 @@ struct IMAPAccount: Codable, Identifiable, Equatable, Hashable {
 
 // Legacy config for IMAPConnection
 struct IMAPConfig {
+    enum AuthMethod {
+        case password(String)
+        case oauth2(accessToken: String)
+    }
+    
     var host: String
     var port: Int
     var username: String
-    var password: String
+    var authMethod: AuthMethod
     var useSSL: Bool
+    
+    // Convenience for password auth
+    init(host: String, port: Int, username: String, password: String, useSSL: Bool) {
+        self.host = host
+        self.port = port
+        self.username = username
+        self.authMethod = .password(password)
+        self.useSSL = useSSL
+    }
+    
+    // For OAuth2 auth
+    init(host: String, port: Int, username: String, accessToken: String, useSSL: Bool) {
+        self.host = host
+        self.port = port
+        self.username = username
+        self.authMethod = .oauth2(accessToken: accessToken)
+        self.useSSL = useSSL
+    }
 }
 
 struct AppConfig: Codable {
@@ -682,6 +732,60 @@ class KeychainHelper {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account
+        ]
+
+        SecItemDelete(query as CFDictionary)
+    }
+    
+    // MARK: - Generic Key-Value Storage (for OAuth2 tokens, etc.)
+    
+    static func save(key: String, value: String) {
+        let deleteQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key
+        ]
+        SecItemDelete(deleteQuery as CFDictionary)
+
+        guard let data = value.data(using: .utf8) else { return }
+
+        let addQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked
+        ]
+
+        SecItemAdd(addQuery as CFDictionary, nil)
+    }
+
+    static func load(key: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+
+        guard status == errSecSuccess,
+              let data = result as? Data,
+              let value = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+
+        return value
+    }
+
+    static func delete(key: String) {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key
         ]
 
         SecItemDelete(query as CFDictionary)
