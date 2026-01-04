@@ -1,4 +1,5 @@
 import SwiftUI
+import WebKit
 
 /// Content view for virtual folder popover - similar to ContentView but uses VirtualFolderManager
 struct VirtualFolderContentView: View {
@@ -6,7 +7,8 @@ struct VirtualFolderContentView: View {
     @State private var selectedEmail: Email?
     @State private var searchText = ""
     @State private var loadedEmail: Email?
-    @State private var isLoading = false
+    @State private var loadedBody: String = ""
+    @State private var isLoadingBody = false
     
     var filteredEmails: [Email] {
         if searchText.isEmpty {
@@ -207,18 +209,47 @@ struct VirtualFolderContentView: View {
                         
                         Divider()
                         
-                        // Body - show preview for now (full body would need account reference)
-                        if !email.preview.isEmpty {
+                        // Body - fetch and display full body
+                        if isLoadingBody {
+                            HStack {
+                                ProgressView()
+                                    .scaleEffect(0.8)
+                                Text("Loading email...")
+                                    .foregroundColor(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding()
+                        } else if !loadedBody.isEmpty {
+                            EmailBodyView(emailBody: loadedBody, email: email)
+                        } else if !email.preview.isEmpty {
                             Text(email.preview)
                                 .font(.body)
                         } else {
-                            Text("Email body not available in virtual view")
+                            Text("No content available")
                                 .font(.body)
                                 .foregroundColor(.secondary)
                         }
                     }
                     .padding()
                 }
+                .onAppear {
+                    loadEmailBody(email)
+                }
+            }
+        }
+    }
+    
+    private func loadEmailBody(_ email: Email) {
+        guard loadedEmail?.id != email.id else { return }
+        
+        isLoadingBody = true
+        loadedBody = ""
+        loadedEmail = email
+        
+        manager.fetchFullBody(for: email) { body in
+            DispatchQueue.main.async {
+                self.loadedBody = body
+                self.isLoadingBody = false
             }
         }
     }
@@ -246,6 +277,62 @@ struct VirtualFolderContentView: View {
         formatter.dateStyle = .medium
         formatter.timeStyle = .short
         return formatter
+    }
+}
+
+// MARK: - Email Body View (for virtual folders)
+
+struct EmailBodyView: View {
+    let emailBody: String
+    let email: Email
+    
+    var formattedHTML: String {
+        let parser = MIMEParser(body: emailBody, contentType: email.contentType, boundary: email.boundary)
+        var html = parser.getHTMLContent()
+        
+        // Inject clean styling
+        let style = """
+        <style>
+            * { box-sizing: border-box; }
+            html, body {
+                font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
+                font-size: 13px;
+                line-height: 1.5;
+                color: #333;
+                background: white;
+                margin: 0;
+                padding: 8px;
+            }
+            img { max-width: 100%; height: auto; }
+            a { color: #007AFF; }
+            pre, code { 
+                background: #f5f5f5; 
+                padding: 2px 6px; 
+                border-radius: 4px;
+                font-family: 'SF Mono', Menlo, monospace;
+                font-size: 12px;
+            }
+            blockquote {
+                border-left: 3px solid #ddd;
+                margin: 8px 0;
+                padding-left: 12px;
+                color: #666;
+            }
+        </style>
+        """
+        
+        if html.lowercased().contains("<html") {
+            html = html.replacingOccurrences(of: "<head>", with: "<head>\(style)")
+        } else {
+            html = "\(style)\(html)"
+        }
+        
+        return html
+    }
+    
+    var body: some View {
+        WebViewRepresentable(html: formattedHTML)
+            .frame(maxWidth: .infinity, minHeight: 200)
     }
 }
 

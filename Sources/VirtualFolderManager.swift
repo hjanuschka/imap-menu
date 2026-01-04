@@ -119,4 +119,18 @@ class VirtualFolderManager: ObservableObject {
     func getAccount(for email: Email) -> IMAPAccount? {
         return findManager(for: email)?.account
     }
+    
+    /// Fetch full body for an email - delegates to the source manager
+    func fetchFullBody(for email: Email, completion: @escaping (String) -> Void) {
+        if let manager = findManager(for: email) {
+            manager.fetchFullBody(for: email, completion: completion)
+        } else {
+            completion("")
+        }
+    }
+    
+    /// Get the folder config for an email (needed for proper email display)
+    func getFolderConfig(for email: Email) -> FolderConfig? {
+        return findManager(for: email)?.folderConfig
+    }
 }
