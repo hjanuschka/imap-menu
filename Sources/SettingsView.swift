@@ -80,8 +80,11 @@ struct SettingsView: View {
             }
         }
         .frame(minWidth: 900, minHeight: 600)
-        .toolbar {
-            ToolbarItemGroup(placement: .confirmationAction) {
+        .safeAreaInset(edge: .bottom) {
+            // Bottom bar with Save/Cancel buttons
+            HStack {
+                Spacer()
+                
                 Button("Cancel") {
                     dismiss()
                 }
@@ -93,6 +96,8 @@ struct SettingsView: View {
                 .keyboardShortcut(.defaultAction)
                 .buttonStyle(.borderedProminent)
             }
+            .padding()
+            .background(.bar)
         }
     }
     
