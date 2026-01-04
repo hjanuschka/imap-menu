@@ -203,19 +203,21 @@ struct AccountDetailView: View {
                         TextField("Account Name", text: $account.name)
 
                         TextField("IMAP Host", text: $account.host)
-                            .disabled(account.accountType == .gmailOAuth2)
+                            .disabled(account.accountType == .gmailAppPassword || account.accountType == .gmailOAuth2)
 
                         HStack {
                             TextField("Port", value: $account.port, format: .number)
                                 .frame(width: 80)
+                                .disabled(account.accountType == .gmailAppPassword || account.accountType == .gmailOAuth2)
                             Toggle("Use SSL", isOn: $account.useSSL)
+                                .disabled(account.accountType == .gmailAppPassword || account.accountType == .gmailOAuth2)
                         }
 
                         TextField("Username / Email", text: $account.username)
                             .textContentType(.username)
 
-                        if account.accountType == .imap {
-                            SecureField("Password", text: $account.password)
+                        if account.accountType == .imap || account.accountType == .gmailAppPassword {
+                            SecureField(account.accountType == .gmailAppPassword ? "App Password" : "Password", text: $account.password)
                                 .textContentType(.password)
                         }
 
@@ -223,7 +225,7 @@ struct AccountDetailView: View {
                             Button("Test Connection") {
                                 testConnection()
                             }
-                            .disabled(testingConnection || account.host.isEmpty || (account.accountType == .gmailOAuth2 && !hasOAuth2Tokens))
+                            .disabled(testingConnection || account.host.isEmpty || (account.accountType == .gmailOAuth2 && !hasOAuth2Tokens) || (account.accountType == .gmailAppPassword && account.password.isEmpty))
 
                             if testingConnection {
                                 ProgressView()
