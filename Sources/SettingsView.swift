@@ -203,9 +203,10 @@ struct AccountSettingsView: View {
     }
     
     var body: some View {
-        Form {
-            // Account Type Section
-            Section {
+        ScrollView {
+            Form {
+                // Account Type Section
+                Section {
                 Picker("Account Type", selection: $account.accountType) {
                     ForEach(IMAPAccount.AccountType.allCases, id: \.self) { type in
                         Label(type.rawValue, systemImage: typeIcon(type)).tag(type)
@@ -350,8 +351,9 @@ struct AccountSettingsView: View {
             } header: {
                 Label("Monitored Folders", systemImage: "folder")
             }
+            }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
         .sheet(isPresented: $showFolderBrowser) {
             FolderBrowserSheet(account: account, onSelect: { folder in
                 account.folders.append(FolderConfig(name: folder, folderPath: folder))
