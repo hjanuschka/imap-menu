@@ -296,6 +296,9 @@ struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
     
     var excludeOwnEmails: Bool
     
+    // Hidden folders are not shown in menu bar but available for virtual folders
+    var hidden: Bool
+    
     // Cache settings
     var lastSeenUID: UInt32
     var cachedEmailCount: Int
@@ -304,7 +307,7 @@ struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
     var maxEmails: Int
     var daysToFetch: Int
 
-    init(id: UUID = UUID(), name: String, folderPath: String, enabled: Bool = true, icon: String = "envelope", iconColor: String = "", iconType: IconType = .sfSymbol, filterSender: String = "", filterSubject: String = "", popoverWidth: PopoverWidth = .medium, filters: [EmailFilter] = [], filterLogic: FilterLogic = .and, filterGroups: [FilterGroup] = [], groupLogic: FilterLogic = .and, excludeOwnEmails: Bool = false, lastSeenUID: UInt32 = 0, cachedEmailCount: Int = 0, maxEmails: Int = 100, daysToFetch: Int = 0) {
+    init(id: UUID = UUID(), name: String, folderPath: String, enabled: Bool = true, icon: String = "envelope", iconColor: String = "", iconType: IconType = .sfSymbol, filterSender: String = "", filterSubject: String = "", popoverWidth: PopoverWidth = .medium, filters: [EmailFilter] = [], filterLogic: FilterLogic = .and, filterGroups: [FilterGroup] = [], groupLogic: FilterLogic = .and, excludeOwnEmails: Bool = false, hidden: Bool = false, lastSeenUID: UInt32 = 0, cachedEmailCount: Int = 0, maxEmails: Int = 100, daysToFetch: Int = 0) {
         self.id = id
         self.name = name
         self.folderPath = folderPath
@@ -320,6 +323,7 @@ struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
         self.filterGroups = filterGroups
         self.groupLogic = groupLogic
         self.excludeOwnEmails = excludeOwnEmails
+        self.hidden = hidden
         self.lastSeenUID = lastSeenUID
         self.cachedEmailCount = cachedEmailCount
         self.maxEmails = maxEmails
@@ -353,6 +357,7 @@ struct FolderConfig: Codable, Identifiable, Equatable, Hashable {
         groupLogic = try container.decodeIfPresent(FilterLogic.self, forKey: .groupLogic) ?? .and
         
         excludeOwnEmails = try container.decodeIfPresent(Bool.self, forKey: .excludeOwnEmails) ?? false
+        hidden = try container.decodeIfPresent(Bool.self, forKey: .hidden) ?? false
         lastSeenUID = try container.decodeIfPresent(UInt32.self, forKey: .lastSeenUID) ?? 0
         cachedEmailCount = try container.decodeIfPresent(Int.self, forKey: .cachedEmailCount) ?? 0
         maxEmails = try container.decodeIfPresent(Int.self, forKey: .maxEmails) ?? 100

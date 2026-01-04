@@ -421,6 +421,10 @@ struct FolderSettingsRow: View {
                     
                     Toggle("Enabled", isOn: $folder.enabled)
                         .toggleStyle(.checkbox)
+                    
+                    Toggle("Hidden", isOn: $folder.hidden)
+                        .toggleStyle(.checkbox)
+                        .help("Hidden folders don't show in menu bar but are available for virtual folders")
                 }
                 
                 // Icon settings (with picker button)
@@ -511,7 +515,15 @@ struct FolderSettingsRow: View {
                 
                 Spacer()
                 
-                if !folder.enabled {
+                if folder.hidden {
+                    Text("Hidden")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.orange.opacity(0.2))
+                        .cornerRadius(4)
+                } else if !folder.enabled {
                     Text("Disabled")
                         .font(.caption)
                         .foregroundColor(.secondary)

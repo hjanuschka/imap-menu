@@ -444,6 +444,7 @@ class VirtualFolderMenuItem {
 class AppDelegate: NSObject, NSApplicationDelegate {
     var folderMenuItems: [FolderMenuItem] = []
     var virtualFolderMenuItems: [VirtualFolderMenuItem] = []
+    var hiddenEmailManagers: [EmailManager] = []  // For hidden folders (no menu item, but available for virtual folders)
     var configObserver: Any?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -483,22 +484,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         virtualFolderMenuItems.removeAll()
         
+        // Stop hidden email managers
+        for manager in hiddenEmailManagers {
+            manager.stopFetching()
+        }
+        hiddenEmailManagers.removeAll()
+        
         print("🧹 Clearing email cache on reload")
 
         // Load config
         let config = AppConfig.load()
 
-        // Create menu items for each account's folders
+        // Create menu items for each account's folders (skip hidden ones for menu bar)
+        // But we still need EmailManagers for hidden folders (for virtual folder sources)
+        var allEmailManagers: [EmailManager] = []
+        
         for account in config.accounts {
             for folderConfig in account.folders where folderConfig.enabled {
-                print("  📐 Creating menuItem for '\(folderConfig.name)' with width: \(folderConfig.popoverWidth.rawValue) (\(folderConfig.popoverWidth.size))")
-                let menuItem = FolderMenuItem(account: account, folderConfig: folderConfig)
-                folderMenuItems.append(menuItem)
+                if folderConfig.hidden {
+                    // Hidden folder: create EmailManager but no menu item
+                    print("  👻 Creating hidden EmailManager for '\(folderConfig.name)' (no menu item)")
+                    let emailManager = EmailManager(account: account, folderConfig: folderConfig)
+                    emailManager.startFetching()
+                    hiddenEmailManagers.append(emailManager)
+                    allEmailManagers.append(emailManager)
+                } else {
+                    // Visible folder: create menu item (which has its own EmailManager)
+                    print("  📐 Creating menuItem for '\(folderConfig.name)' with width: \(folderConfig.popoverWidth.rawValue) (\(folderConfig.popoverWidth.size))")
+                    let menuItem = FolderMenuItem(account: account, folderConfig: folderConfig)
+                    folderMenuItems.append(menuItem)
+                    allEmailManagers.append(menuItem.emailManager)
+                }
             }
         }
         
-        // Create virtual folder menu items (after regular folders so they can reference their managers)
-        let allEmailManagers = folderMenuItems.map { $0.emailManager }
+        // Create virtual folder menu items
         for virtualFolder in config.virtualFolders where virtualFolder.enabled {
             print("  📐 Creating virtual menuItem for '\(virtualFolder.name)' with \(virtualFolder.sources.count) sources")
             let menuItem = VirtualFolderMenuItem(virtualFolder: virtualFolder, allEmailManagers: allEmailManagers)
