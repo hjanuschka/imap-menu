@@ -429,16 +429,21 @@ struct AccountDetailView: View {
                                 Text(type.rawValue).tag(type)
                             }
                         }
-                        .pickerStyle(.segmented)
+                        .pickerStyle(.menu)
                         .onChange(of: account.accountType) { newType in
-                            // Auto-fill server settings for known providers
+                            // Auto-fill server settings for Gmail ONLY if host is empty or default
                             if newType == .gmailAppPassword || newType == .gmailOAuth2 {
-                                account.host = "imap.gmail.com"
-                                account.port = 993
-                                account.useSSL = true
-                                account.smtpHost = "smtp.gmail.com"
-                                account.smtpPort = 587
-                                account.smtpUseSSL = true
+                                // Only auto-fill if not already configured
+                                if account.host.isEmpty || account.host == "imap.example.com" {
+                                    account.host = "imap.gmail.com"
+                                    account.port = 993
+                                    account.useSSL = true
+                                }
+                                if account.smtpHost.isEmpty {
+                                    account.smtpHost = "smtp.gmail.com"
+                                    account.smtpPort = 587
+                                    account.smtpUseSSL = true
+                                }
                             }
                         }
                         
