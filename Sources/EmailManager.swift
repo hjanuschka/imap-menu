@@ -102,7 +102,7 @@ class EmailCache {
                 // Only load if not too old (max 1 hour)
                 if Date().timeIntervalSince(cached.lastFetchTime) < 3600 {
                     // Filter out bad cached entries (Unknown Sender = parsing failed)
-                    let validEmails = cached.emails.filter { $0.from != "Unknown Sender" || $0.subject != "No Subject" }
+                    let validEmails = cached.emails.filter { $0.from != "Unknown Sender" }
                     if validEmails.count < cached.emails.count {
                         debugLog("[EmailCache] Filtered out \(cached.emails.count - validEmails.count) bad cached entries for \(cached.folderPath)")
                     }

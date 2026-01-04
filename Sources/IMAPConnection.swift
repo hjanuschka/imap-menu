@@ -1200,40 +1200,86 @@ class IMAPConnection {
     private func parseEmailsHeadersOnly(from response: String) -> [Email] {
         var emails: [Email] = []
         
-        // Split on CRLF followed by "* " to properly separate FETCH responses
-        // This avoids splitting on "* " that appears inside header content
-        let blocks = response.components(separatedBy: "\r\n* ").filter { $0.contains("FETCH") }
-
-        for block in blocks {
-            // Re-add "* " prefix if it was removed by splitting (except first block which may start with it)
-            let fullBlock = block.hasPrefix("*") ? block : "* " + block
-            if let email = parseEmailHeaderOnly(fullBlock) {
+        // Parse FETCH responses by looking for "* N FETCH" patterns
+        // Each FETCH may contain a literal {bytecount} followed by that many bytes of header data
+        // We need to track these literals to avoid splitting in the wrong place
+        
+        var index = response.startIndex
+        let endIndex = response.endIndex
+        
+        while index < endIndex {
+            // Find next "* " that starts a FETCH response
+            guard let starPos = response.range(of: "* ", range: index..<endIndex) else {
+                break
+            }
+            
+            // Check if this is a FETCH response
+            let lineStart = starPos.lowerBound
+            guard let lineEnd = response.range(of: "\r\n", range: lineStart..<endIndex) else {
+                break
+            }
+            
+            let firstLine = String(response[lineStart..<lineEnd.lowerBound])
+            
+            // Skip if not a FETCH
+            if !firstLine.contains("FETCH") {
+                index = lineEnd.upperBound
+                continue
+            }
+            
+            // Check for literal {bytecount}
+            var blockEnd = lineEnd.upperBound
+            if let literalMatch = firstLine.range(of: #"\{(\d+)\}$"#, options: .regularExpression) {
+                let bytecountStr = firstLine[literalMatch]
+                    .dropFirst() // {
+                    .dropLast() // }
+                if let bytecount = Int(bytecountStr) {
+                    // Skip past the literal data
+                    let literalStart = lineEnd.upperBound
+                    let literalEnd = response.index(literalStart, offsetBy: bytecount, limitedBy: endIndex) ?? endIndex
+                    
+                    // Find the closing parenthesis after the literal
+                    if let closeParen = response.range(of: ")\r\n", range: literalEnd..<endIndex) {
+                        blockEnd = closeParen.upperBound
+                    } else if let closeParen = response.range(of: ")", range: literalEnd..<endIndex) {
+                        blockEnd = closeParen.upperBound
+                    } else {
+                        blockEnd = literalEnd
+                    }
+                }
+            }
+            
+            // Extract the full block
+            let block = String(response[lineStart..<blockEnd])
+            
+            if let email = parseEmailHeaderOnly(block) {
                 emails.append(email)
             }
+            
+            index = blockEnd
         }
 
         return emails
     }
 
     private func parseEmailHeaderOnly(_ block: String) -> Email? {
+        // Parse UID
         var uid: UInt32 = 0
         if let uidMatch = block.range(of: #"UID (\d+)"#, options: .regularExpression) {
             let uidStr = String(block[uidMatch]).replacingOccurrences(of: "UID ", with: "")
             uid = UInt32(uidStr) ?? 0
         }
         
-        // Debug: log first 500 chars of block for troubleshooting
-        if block.contains("Unknown") || uid > 0 {
-            print("[IMAP DEBUG] Parsing block for UID \(uid): \(block.prefix(500))")
-        }
+        guard uid > 0 else { return nil }
 
+        // Parse FLAGS
         var isRead = false
         if let flagsMatch = block.range(of: #"FLAGS \([^)]*\)"#, options: .regularExpression) {
             let flags = String(block[flagsMatch])
             isRead = flags.contains("\\Seen")
         }
 
-        // Parse INTERNALDATE (receive date) - this is what we sort by!
+        // Parse INTERNALDATE
         var receivedDate = Date()
         if let internalDateMatch = block.range(of: #"INTERNALDATE "([^"]+)""#, options: .regularExpression) {
             let dateStr = String(block[internalDateMatch])
@@ -1244,66 +1290,47 @@ class IMAPConnection {
             }
         }
 
+        // Simple approach: scan all lines in block for header patterns
+        // Headers are lines like "From: ...", "Subject: ...", etc.
         var subject = ""
         var from = ""
         var to = ""
-        var date = Date()  // From header (not used for sorting, just for processHeader compatibility)
         var contentType = "text/plain"
         var boundary = ""
-
-        // Handle BODY[HEADER], BODY[HEADER.FIELDS (...)], and BODY.PEEK variants
-        // Server response drops the .PEEK part
-        var headerMarker: Range<String.Index>? = block.range(of: "BODY[HEADER.FIELDS")
-        if headerMarker == nil {
-            headerMarker = block.range(of: "BODY[HEADER]")
-        }
         
-        if headerMarker == nil {
-            print("[IMAP DEBUG] No header marker found in block! Block preview: \(block.prefix(300))")
-        }
-
-        if let marker = headerMarker {
-            // Skip to after the closing bracket of the BODY[...] part
-            let afterMarker: Substring
-            if let closingBracket = block[marker.upperBound...].range(of: "]") {
-                afterMarker = block[closingBracket.upperBound...]
-            } else {
-                afterMarker = block[marker.upperBound...]
+        let lines = block.components(separatedBy: "\r\n")
+        var currentHeader = ""
+        var inHeaders = false
+        
+        for line in lines {
+            // Start parsing headers after we see the literal {bytecount}
+            if !inHeaders {
+                if line.contains("{") && line.hasSuffix("}") {
+                    inHeaders = true
+                }
+                continue
             }
-
-            if let _ = afterMarker.range(of: "{"),
-               let braceEnd = afterMarker.range(of: "}") {
-                let afterBrace = afterMarker[braceEnd.upperBound...]
-                var headers = String(afterBrace)
-
-                if headers.hasPrefix("\r\n") {
-                    headers = String(headers.dropFirst(2))
-                }
-
-                let headerLines = headers.components(separatedBy: "\r\n")
-                var currentHeader = ""
-
-                for line in headerLines {
-                    if line.isEmpty || line == ")" || line.hasPrefix(")") {
-                        break
-                    }
-
-                    if line.hasPrefix(" ") || line.hasPrefix("\t") {
-                        currentHeader += " " + line.trimmingCharacters(in: .whitespaces)
-                    } else {
-                        if !currentHeader.isEmpty {
-                            processHeader(currentHeader, subject: &subject, from: &from, to: &to, date: &date, contentType: &contentType, boundary: &boundary)
-                        }
-                        currentHeader = line
-                    }
-                }
+            
+            // Stop at empty line or closing paren
+            if line.isEmpty || line == ")" || line.hasPrefix(")") {
+                // Process last header
                 if !currentHeader.isEmpty {
-                    processHeader(currentHeader, subject: &subject, from: &from, to: &to, date: &date, contentType: &contentType, boundary: &boundary)
+                    parseHeaderLine(currentHeader, subject: &subject, from: &from, to: &to, contentType: &contentType, boundary: &boundary)
                 }
+                break
+            }
+            
+            // Header continuation (starts with space/tab)
+            if line.hasPrefix(" ") || line.hasPrefix("\t") {
+                currentHeader += " " + line.trimmingCharacters(in: .whitespaces)
+            } else {
+                // New header - process previous one first
+                if !currentHeader.isEmpty {
+                    parseHeaderLine(currentHeader, subject: &subject, from: &from, to: &to, contentType: &contentType, boundary: &boundary)
+                }
+                currentHeader = line
             }
         }
-
-        guard uid > 0 else { return nil }
 
         // Parse from field into name and email components
         let fromDisplay = from.isEmpty ? "Unknown Sender" : from
@@ -1334,19 +1361,17 @@ class IMAPConnection {
         return formatter.date(from: dateStr)
     }
 
-    private func processHeader(_ header: String, subject: inout String, from: inout String, to: inout String, date: inout Date, contentType: inout String, boundary: inout String) {
-        let lower = header.lowercased()
-
+    private func parseHeaderLine(_ line: String, subject: inout String, from: inout String, to: inout String, contentType: inout String, boundary: inout String) {
+        let lower = line.lowercased()
+        
         if lower.hasPrefix("subject:") {
-            subject = decodeHeader(String(header.dropFirst(8)).trimmingCharacters(in: .whitespaces))
+            subject = decodeHeader(String(line.dropFirst(8)).trimmingCharacters(in: .whitespaces))
         } else if lower.hasPrefix("from:") {
-            from = parseFromHeader(String(header.dropFirst(5)).trimmingCharacters(in: .whitespaces))
+            from = parseFromHeader(String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces))
         } else if lower.hasPrefix("to:") {
-            to = parseFromHeader(String(header.dropFirst(3)).trimmingCharacters(in: .whitespaces))
-        } else if lower.hasPrefix("date:") {
-            date = parseDate(String(header.dropFirst(5)).trimmingCharacters(in: .whitespaces)) ?? Date()
+            to = parseFromHeader(String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces))
         } else if lower.hasPrefix("content-type:") {
-            let ct = String(header.dropFirst(13)).trimmingCharacters(in: .whitespaces)
+            let ct = String(line.dropFirst(13)).trimmingCharacters(in: .whitespaces)
             contentType = ct
             if let boundaryRange = ct.range(of: #"boundary="?([^";\s]+)"?"#, options: .regularExpression) {
                 var b = String(ct[boundaryRange])
@@ -1356,7 +1381,7 @@ class IMAPConnection {
             }
         }
     }
-
+    
     private func parseFromHeader(_ from: String) -> String {
         let decoded = decodeHeader(from)
 
