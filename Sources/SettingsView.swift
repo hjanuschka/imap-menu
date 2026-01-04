@@ -1,22 +1,27 @@
 import SwiftUI
 
+// MARK: - Selection Types
+
+enum SidebarSelection: Hashable {
+    case account(UUID)
+    case virtualFolder(UUID)
+}
+
 // MARK: - Main Settings View
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     
     @State private var config = AppConfig.load()
-    @State private var selectedAccountID: UUID?
-    @State private var selectedVirtualFolderID: UUID?
-    @State private var selectedTab = 0
+    @State private var selection: SidebarSelection?
 
     var body: some View {
         NavigationSplitView {
             // Sidebar
-            List(selection: $selectedAccountID) {
+            List(selection: $selection) {
                 Section("Mail Accounts") {
                     ForEach($config.accounts) { $account in
-                        NavigationLink(value: account.id) {
+                        NavigationLink(value: SidebarSelection.account(account.id)) {
                             AccountSidebarRow(account: account)
                         }
                     }
@@ -36,7 +41,7 @@ struct SettingsView: View {
                 
                 Section("Virtual Folders") {
                     ForEach($config.virtualFolders) { $vf in
-                        NavigationLink(value: vf.id) {
+                        NavigationLink(value: SidebarSelection.virtualFolder(vf.id)) {
                             Label(vf.name, systemImage: vf.icon)
                                 .foregroundColor(Color(vf.nsColor))
                         }
@@ -57,13 +62,20 @@ struct SettingsView: View {
 
         } detail: {
             // Detail View
-            if let accountID = selectedAccountID,
-               let index = config.accounts.firstIndex(where: { $0.id == accountID }) {
-                AccountSettingsView(account: $config.accounts[index], allAccounts: config.accounts)
-            } else if let vfID = selectedVirtualFolderID,
-                      let index = config.virtualFolders.firstIndex(where: { $0.id == vfID }) {
-                VirtualFolderSettingsView(virtualFolder: $config.virtualFolders[index], accounts: config.accounts)
-            } else {
+            switch selection {
+            case .account(let accountID):
+                if let index = config.accounts.firstIndex(where: { $0.id == accountID }) {
+                    AccountSettingsView(account: $config.accounts[index], allAccounts: config.accounts)
+                } else {
+                    WelcomeView(onAddAccount: addNewAccount)
+                }
+            case .virtualFolder(let vfID):
+                if let index = config.virtualFolders.firstIndex(where: { $0.id == vfID }) {
+                    VirtualFolderSettingsView(virtualFolder: $config.virtualFolders[index], accounts: config.accounts)
+                } else {
+                    WelcomeView(onAddAccount: addNewAccount)
+                }
+            case .none:
                 WelcomeView(onAddAccount: addNewAccount)
             }
         }
@@ -82,21 +94,18 @@ struct SettingsView: View {
                 .buttonStyle(.borderedProminent)
             }
         }
-        .onChange(of: selectedAccountID) { _ in
-            selectedVirtualFolderID = nil
-        }
     }
     
     private func addNewAccount() {
         let account = IMAPAccount(name: "New Account", host: "", username: "")
         config.accounts.append(account)
-        selectedAccountID = account.id
+        selection = .account(account.id)
     }
     
     private func addNewVirtualFolder() {
         let vf = VirtualFolder(name: "New Virtual Folder")
         config.virtualFolders.append(vf)
-        selectedVirtualFolderID = vf.id
+        selection = .virtualFolder(vf.id)
     }
     
     private func saveAndClose() {
