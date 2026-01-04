@@ -353,6 +353,7 @@ struct AccountSettingsView: View {
             }
             }
             .formStyle(.grouped)
+            .padding(.bottom, 60) // Space for bottom bar
         }
         .sheet(isPresented: $showFolderBrowser) {
             FolderBrowserSheet(account: account, onSelect: { folder in
@@ -678,10 +679,11 @@ struct VirtualFolderSettingsView: View {
     @State private var showIconPicker = false
     
     var body: some View {
-        Form {
-            // Basic Settings
-            Section {
-                TextField("Name", text: $virtualFolder.name)
+        ScrollView {
+            Form {
+                // Basic Settings
+                Section {
+                    TextField("Name", text: $virtualFolder.name)
                     .textFieldStyle(.roundedBorder)
                 
                 Toggle("Enabled", isOn: $virtualFolder.enabled)
@@ -791,8 +793,10 @@ struct VirtualFolderSettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
+            }
+            .formStyle(.grouped)
+            .padding(.bottom, 60) // Space for bottom bar
         }
-        .formStyle(.grouped)
         .sheet(isPresented: $showIconPicker) {
             IconPickerView(
                 icon: $virtualFolder.icon,
