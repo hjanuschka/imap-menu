@@ -149,11 +149,22 @@ actor SwiftMailIMAPClient {
     // MARK: - Search Operations
     
     /// Search for emails matching criteria
+    /// For large mailboxes, uses UID range to avoid PayloadTooLargeError
     func search(since: Date? = nil, limit: Int = 200) async throws -> [UInt32] {
         guard let server = server else {
             throw IMAPClientError.notConnected
         }
         
+        // For large mailboxes (>10k messages), use UID-based approach to avoid huge search responses
+        let messageCount = currentMailboxStatus?.messageCount ?? 0
+        let uidNext = currentMailboxStatus?.uidNext.value ?? 0
+        
+        if messageCount > 10000 && limit > 0 {
+            print("[SwiftMail] Large mailbox (\(messageCount) messages) - using UID range approach")
+            return try await searchByUIDRange(uidNext: UInt32(uidNext), limit: limit, since: since)
+        }
+        
+        // Standard search for smaller mailboxes
         var criteria: [SearchCriteria] = []
         
         if let since = since {
@@ -178,6 +189,51 @@ actor SwiftMailIMAPClient {
         
         print("[SwiftMail] Search found \(uidSet.count) UIDs, returning \(uids.count) (limit: \(limit))")
         return uids
+    }
+    
+    /// For large mailboxes, fetch recent UIDs by range and filter by date client-side
+    private func searchByUIDRange(uidNext: UInt32, limit: Int, since: Date?) async throws -> [UInt32] {
+        guard let server = server else {
+            throw IMAPClientError.notConnected
+        }
+        
+        // Estimate: fetch 3x the limit to account for date filtering
+        // Start from recent UIDs and work backwards
+        let fetchCount = min(limit * 3, 1000)
+        let startUID = uidNext > UInt32(fetchCount) ? uidNext - UInt32(fetchCount) : 1
+        
+        // Create UID range for recent messages
+        let uidRange = SwiftMail.UID(startUID)...SwiftMail.UID(uidNext)
+        let uidSet = MessageIdentifierSet<SwiftMail.UID>(uidRange)
+        
+        print("[SwiftMail] Fetching UID range \(startUID)...\(uidNext) (\(fetchCount) UIDs)")
+        
+        var matchingUIDs: [UInt32] = []
+        
+        // Fetch headers and filter by date
+        for try await messageInfo in server.fetchMessageInfos(using: uidSet) {
+            guard let uid = messageInfo.uid else { continue }
+            
+            // Filter by date if specified
+            if let since = since, let date = messageInfo.date {
+                if date < since {
+                    continue  // Skip emails older than since date
+                }
+            }
+            
+            matchingUIDs.append(UInt32(uid.value))
+            
+            // Stop if we have enough
+            if matchingUIDs.count >= limit {
+                break
+            }
+        }
+        
+        // Sort descending (newest first)
+        matchingUIDs.sort(by: >)
+        
+        print("[SwiftMail] UID range search found \(matchingUIDs.count) matching emails")
+        return Array(matchingUIDs.prefix(limit))
     }
     
     // MARK: - Fetch Operations
