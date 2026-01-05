@@ -760,8 +760,10 @@ class IMAPConnection {
                     searchCommand = "UID SEARCH ALL"
                 }
 
+                print("[IMAP] Search command: \(searchCommand)")
                 let searchResponse = try searchConnection.sendCommand(searchCommand)
                 searchConnection.disconnect()
+                print("[IMAP] Search response length: \(searchResponse.count) chars")
 
                 var uids: [UInt32] = []
                 for line in searchResponse.components(separatedBy: "\r\n") {
@@ -797,6 +799,7 @@ class IMAPConnection {
                     let end = min(i + chunkSize, recentUIDs.count)
                     chunks.append(Array(recentUIDs[i..<end]))
                 }
+                print("[IMAP] Split into \(chunks.count) chunks of size \(chunkSize): \(chunks.map { $0.count })")
 
                 let group = DispatchGroup()
                 let resultsLock = NSLock()
@@ -836,9 +839,9 @@ class IMAPConnection {
                     }
                 }
 
-                // Fetch remaining chunks in parallel (limit to 2 extra connections)
+                // Fetch remaining chunks in parallel (use all remaining chunks, not just 2)
                 // Skip if already cancelled
-                let remainingChunks = shouldCancel?() == true ? [] : Array(chunks.dropFirst().prefix(2))
+                let remainingChunks = shouldCancel?() == true ? [] : Array(chunks.dropFirst())
                 for (index, chunk) in remainingChunks.enumerated() {
                     guard !chunk.isEmpty else { continue }
 
@@ -1199,6 +1202,7 @@ class IMAPConnection {
 
     private func parseEmailsHeadersOnly(from response: String) -> [Email] {
         var emails: [Email] = []
+        var parseFailures = 0
         
         // Parse FETCH responses by looking for "* N FETCH" patterns
         // Each FETCH may contain a literal {bytecount} followed by that many bytes of header data
@@ -1254,11 +1258,16 @@ class IMAPConnection {
             
             if let email = parseEmailHeaderOnly(block) {
                 emails.append(email)
+            } else {
+                parseFailures += 1
             }
             
             index = blockEnd
         }
 
+        if parseFailures > 0 {
+            print("[IMAP] WARNING: \(parseFailures) emails failed to parse!")
+        }
         return emails
     }
 

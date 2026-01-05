@@ -1186,7 +1186,7 @@ class EmailManager: ObservableObject {
 
             do {
                 let folderPath = self.folderConfig.folderPath
-                let highestCachedUID = forceFullRefresh ? 0 : self.cache.getHighestUID(for: self.cacheKey)
+                let highestCachedUID: UInt32 = 0  // DISABLED CACHE - always full fetch
                 
                 // Get fetch settings from folder config
                 let maxEmails = self.folderConfig.maxEmails  // 0 = unlimited
@@ -1227,7 +1227,7 @@ class EmailManager: ObservableObject {
                     var currentUnreadCount = 0
                     let unreadLock = NSLock()
                     
-                    IMAPConnection.fetchEmailsParallel(
+                    SwiftMailIMAPClient.fetchEmailsParallel(
                         config: imapConfig,
                         folder: folderPath,
                         limit: maxEmails,
@@ -1304,9 +1304,10 @@ class EmailManager: ObservableObject {
                     debugLog("[EmailManager] [\(self.folderConfig.name)] Parallel fetch complete: \(fetchedEmails.count) emails")
                 }
 
-                // Final sort by date
+                // Final sort by date - always merge to avoid losing emails
                 let allEmails: [Email]
-                if highestCachedUID > 0 && !forceFullRefresh {
+                if highestCachedUID > 0 {
+                    // Merge fetched emails with cache (even on full refresh to avoid losing emails)
                     allEmails = self.cache.mergeNewEmails(fetchedEmails, for: self.cacheKey, maxEmails: maxEmails)
                 } else {
                     allEmails = fetchedEmails.sorted { $0.date > $1.date }
