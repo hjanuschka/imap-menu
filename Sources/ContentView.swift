@@ -164,7 +164,7 @@ struct ContentView: View {
     
     private var emailListView: some View {
         ScrollView {
-            LazyVStack(spacing: 1) {
+            LazyVStack(spacing: 0) {
                 ForEach(filteredEmails) { email in
                     EmailRowView(
                         email: email,
@@ -172,9 +172,9 @@ struct ContentView: View {
                         isSelected: selectedEmail?.id == email.id,
                         onSelect: { selectedEmail = email }
                     )
+                    .id(email.id)
                 }
             }
-            .padding(.vertical, 4)
         }
     }
     
@@ -263,16 +263,12 @@ struct EmailRowView: View {
                     .foregroundColor(email.isRead ? .primary.opacity(0.8) : .primary)
                     .lineLimit(1)
                 
-                // Preview - always show
-                if !email.preview.isEmpty {
-                    Text(email.preview)
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                        .lineLimit(2)
-                }
+                // Preview - show if available
+                Text(email.preview.isEmpty ? " " : email.preview)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
             }
-            
-            Spacer(minLength: 0)
             
             // Action buttons (show on hover)
             if isHovered {
@@ -295,12 +291,13 @@ struct EmailRowView: View {
             }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 6)
+        .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(backgroundColor)
         )
         .padding(.horizontal, 4)
+        .padding(.vertical, 1)
         .contentShape(Rectangle())
         .onTapGesture { onSelect() }
         .onHover { hovering in

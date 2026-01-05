@@ -450,8 +450,8 @@ extension SwiftMailIMAPClient {
                     
                     print("[SwiftMail] Batch \(batchStart/batchSize + 1): fetched \(batchEmails.count) emails (total: \(allEmails.count))")
                     
-                    // Call batch callback
-                    onBatch(allEmails)
+                    // Call batch callback with just this batch (not accumulated)
+                    onBatch(batchEmails)
                 }
                 
                 await client.disconnect()
