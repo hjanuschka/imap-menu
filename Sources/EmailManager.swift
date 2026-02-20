@@ -1517,9 +1517,9 @@ class EmailManager: ObservableObject {
             return
         }
 
-        fetchQueue.async { [weak self] in
+        Task.detached(priority: .userInitiated) { [weak self] in
             guard let self = self else {
-                DispatchQueue.main.async { completion("") }
+                await MainActor.run { completion("") }
                 return
             }
 
@@ -1528,20 +1528,20 @@ class EmailManager: ObservableObject {
                 guard let imapConfig = self.createIMAPConfig() else {
                     throw IMAPError.authenticationFailed
                 }
-                let connection = try self.getOrCreateConnection(config: imapConfig)
-                let fullMessage = try connection.fetchFullMessage(folder: folderPath, uid: email.uid)
 
-                var body = fullMessage
-                if let headerEnd = fullMessage.range(of: "\r\n\r\n") {
-                    body = String(fullMessage[headerEnd.upperBound...])
-                }
+                let client = SwiftMailIMAPClient(config: imapConfig)
+                try await client.connect()
+                _ = try await client.selectFolder(folderPath)
 
-                DispatchQueue.main.async {
+                let body = try await client.fetchFullMessage(uid: email.uid)
+                await client.disconnect()
+
+                await MainActor.run {
                     completion(body)
                 }
             } catch {
                 debugLog("[EmailManager] Failed to fetch full body: \(error)")
-                DispatchQueue.main.async {
+                await MainActor.run {
                     completion("")
                 }
             }

@@ -597,8 +597,13 @@ struct EmailDetailView: View {
     }
     
     private func formatEmailBody(_ email: Email) -> String {
-        let parser = MIMEParser(body: email.body, contentType: email.contentType, boundary: email.boundary)
-        var html = parser.getHTMLContent()
+        var html: String
+        if looksLikeHTML(email.body) {
+            html = ensureHTMLWrapper(email.body)
+        } else {
+            let parser = MIMEParser(body: email.body, contentType: email.contentType, boundary: email.boundary)
+            html = parser.getHTMLContent()
+        }
         
         // Inject clean styling for white background
         let style = """
@@ -652,6 +657,27 @@ struct EmailDetailView: View {
         }
         
         return html
+    }
+    
+    private func looksLikeHTML(_ body: String) -> Bool {
+        let lower = body.lowercased()
+        return lower.contains("<html") ||
+            lower.contains("<body") ||
+            lower.contains("<!doctype") ||
+            lower.contains("<div") ||
+            lower.contains("<p>") ||
+            lower.contains("<table")
+    }
+    
+    private func ensureHTMLWrapper(_ html: String) -> String {
+        let lower = html.lowercased()
+        if lower.contains("<html") {
+            return html
+        }
+        if lower.contains("<body") {
+            return "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head>\(html)</html>"
+        }
+        return "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body>\(html)</body></html>"
     }
     
     private func startMarkAsReadTimer() {

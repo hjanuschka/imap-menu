@@ -287,8 +287,13 @@ struct EmailBodyView: View {
     let email: Email
     
     var formattedHTML: String {
-        let parser = MIMEParser(body: emailBody, contentType: email.contentType, boundary: email.boundary)
-        var html = parser.getHTMLContent()
+        let html: String
+        if looksLikeHTML(emailBody) {
+            html = ensureHTMLWrapper(emailBody)
+        } else {
+            let parser = MIMEParser(body: emailBody, contentType: email.contentType, boundary: email.boundary)
+            html = parser.getHTMLContent()
+        }
         
         // Inject clean styling
         let style = """
@@ -322,12 +327,30 @@ struct EmailBodyView: View {
         """
         
         if html.lowercased().contains("<html") {
-            html = html.replacingOccurrences(of: "<head>", with: "<head>\(style)")
-        } else {
-            html = "\(style)\(html)"
+            return html.replacingOccurrences(of: "<head>", with: "<head>\(style)")
         }
-        
-        return html
+        return "\(style)\(html)"
+    }
+    
+    private func looksLikeHTML(_ body: String) -> Bool {
+        let lower = body.lowercased()
+        return lower.contains("<html") ||
+            lower.contains("<body") ||
+            lower.contains("<!doctype") ||
+            lower.contains("<div") ||
+            lower.contains("<p>") ||
+            lower.contains("<table")
+    }
+    
+    private func ensureHTMLWrapper(_ html: String) -> String {
+        let lower = html.lowercased()
+        if lower.contains("<html") {
+            return html
+        }
+        if lower.contains("<body") {
+            return "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head>\(html)</html>"
+        }
+        return "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body>\(html)</body></html>"
     }
     
     var body: some View {
